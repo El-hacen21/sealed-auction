@@ -48,17 +48,44 @@ export async function placeBid(fhevm, auctionContract, auctionAddress, bidderSig
     );
 }
 
-/**
- * Attempts to finalize the auction and expects success.
- * @param {Contract} auction - The auction contract instance
- * @param {Signer} owner - The auction owner signer
- */
-export async function finalizeAuction(auction, owner) {
-    await expect(
-        auction.connect(owner).finalizeAuction({ gasLimit: 5000000 })
-    ).to.emit(auction, 'AuctionFinalized');
-    console.log("Auction finalized successfully.");
+
+export async function finalizeAuction(contract, batchSize) {
+    let stillRunning = true;
+    let totalGasUsed = BigInt(0);
+
+    const tx = await contract.finalizeAuction(batchSize);
+
+    // while (stillRunning) {
+    //     // 1) Call the contract function
+    //     const tx = await contract.finalizeAuction(batchSize);
+
+    //     // 2) Wait for the tx receipt
+    //     const receipt = await tx.wait();
+
+    //     // 3) Accumulate gasUsed
+    //     totalGasUsed = totalGasUsed + receipt.gasUsed;
+
+    //     // 4) Check status
+    //     const ci = await contract.currentIndex();    // currentIndex
+    //     const bc = await contract.bidCounter();      // bidCounter
+    //     const fin = await contract.isFinalized();    // bool
+
+    //     if (fin || (ci == bc)) {
+    //         stillRunning = false;
+    //     }
+    // }
+
+    console.log("Auction fully finalized!");
+    console.log("Total gas used across all batches:", totalGasUsed.toString());
+
+    // You might also want the total cost in WEI/ETH:
+    // If using a typical network with dynamic gas price:
+    //   - Need the effectiveGasPrice from each receipt
+    //   - Sum up gasUsed[i] * effectiveGasPrice[i].
+    // For simplicity, here we only track total gasUsed (not cost).
 }
+
+
 
 /**
  * Attempts to finalize the auction and expects a revert if not the owner.
@@ -143,57 +170,133 @@ export async function decryptAndDisplay(deployer, fhevm, encryptedValue, contrac
     }
 }
 
-
-export async function displayAllBidOutputs(deployer, fhevm, blindAuction, contractAddress, useDebug = false) {
-    // Retrieve the total number of bids
-    const totalBids = await blindAuction.getTotalBidAccounts();
-    console.log(`Total number of bidding outputs : ${totalBids}`);
-
-    // Loop through the bid outputs using the contract's getter
-    for (let i = 0; i < totalBids; i++) {
-        const bidOutput = await blindAuction.getBidOutput(i);
-
-        const decryptedAmount = await decryptAndDisplay(deployer, fhevm, bidOutput.eAmount, contractAddress, useDebug, 'decrypt64');
-        const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bidOutput.eQuantity, contractAddress, useDebug, 'decrypt64');
-        const decryptedDeposit= await decryptAndDisplay(deployer, fhevm, bidOutput.eDeposit, contractAddress, useDebug, 'decrypt64');
-
-        console.log(`Bid ${i + 1}:`);
-        console.log(`  Deposit: ${decryptedDeposit}`);
-        console.log(`  Quantity: ${decryptedQuantity}`);
-        console.log(`  Amount: ${decryptedAmount}`);
-    }
+/*******************************************************
+ * HELPER: Create a padded string for console alignment
+ *******************************************************/
+function padString(value, length) {
+    const strValue = String(value);
+    if (strValue.length >= length) return strValue;
+    return strValue + " ".repeat(length - strValue.length);
 }
-
-
 
 export async function displayAllBids(deployer, fhevm, blindAuction, contractAddress, useDebug = false) {
     const bidCounter = await blindAuction.bidCounter();
     const totalTokens = await blindAuction.totalTokens();
     const minBidPrice = await blindAuction.minBidPrice();
 
-    console.log(`Nb bids: ${bidCounter} | Nb Tokens: ${totalTokens} | Min Bid Price: ${minBidPrice}`);
+    console.log(`\n=== BIDS INFO ===`);
+    console.log(`Nb bids: ${bidCounter} | Nb Tokens: ${totalTokens} | Min Bid Price: ${minBidPrice}\n`);
 
-    for (let i = 1; i <= bidCounter; i++) {
+    console.log("---------------------------------------------------------------");
+    console.log(
+        "| " +
+        padString("ID", 3) +
+        " | " +
+        padString("Price", 7) +
+        " | " +
+        padString("Quantity", 8) +
+        " | " +
+        padString("Index", 5) +
+        " | " +
+        padString("TotalBuy", 8) +
+        " | " +
+        padString("PartialBuy", 10) +
+        " |"
+    );
+    console.log("---------------------------------------------------------------");
+
+    for (let i = 0; i < bidCounter; i++) {
         const bid = await blindAuction.getBid(i);
 
-        const decryptedPrice = await decryptAndDisplay(deployer, fhevm, bid.ePrice, contractAddress, useDebug, 'decrypt64');
-        const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bid.eQuantity, contractAddress, useDebug, 'decrypt64');
-        const decryptedIndex = await decryptAndDisplay(deployer, fhevm, bid.eIndex, contractAddress, useDebug, 'decrypt64');
-        const decryptedTotalBuy = await decryptAndDisplay(deployer, fhevm, bid.eTotalBuy, contractAddress, useDebug, 'decryptBool');
-        const decryptedPartialBuy= await decryptAndDisplay(deployer, fhevm, bid.ePartialBuy, contractAddress, useDebug, 'decryptBool');
+        try {
+            const decryptedPrice = await decryptAndDisplay(deployer, fhevm, bid.ePrice, contractAddress, useDebug, "decrypt64");
+            const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bid.eQuantity, contractAddress, useDebug, "decrypt64");
+            const decryptedIndex = await decryptAndDisplay(deployer, fhevm, bid.eIndex, contractAddress, useDebug, "decrypt64");
+            // const decryptedTotalBuy = await decryptAndDisplay(deployer, fhevm, bid.eTotalBuy, contractAddress, useDebug, "decryptBool");
+            // const decryptedPartialBuy = await decryptAndDisplay(deployer, fhevm, bid.ePartialBuy, contractAddress, useDebug, "decryptBool");
 
-        // decryptedPartialBuy = await decryptAndDisplay(deployer, fhevm, bid.ePartialBuy, contractAddress, useDebug, 'decrypt64');
-
-        // Display the decrypted values
-        console.log(`Bid ${i}:`);
-        console.log(`  Price: ${decryptedPrice}`);
-        console.log(`  Quantity: ${decryptedQuantity}`);
-        console.log(`  Index: ${decryptedIndex}`);
-        console.log(`  TotalBuy: ${decryptedTotalBuy}`);
-        console.log(`  PartialBuy: ${decryptedPartialBuy}`);
-        
+            console.log(
+                "| " +
+                padString(i, 3) +
+                " | " +
+                padString(decryptedPrice, 7) +
+                " | " +
+                padString(decryptedQuantity, 8) +
+                " | " +
+                padString(decryptedIndex, 5) +
+                " | " +
+                // padString(decryptedTotalBuy, 8) +
+                // " | " +
+                // padString(decryptedPartialBuy, 10) +
+                " |"
+            );
+        } catch (err) {
+            console.error(`Failed to decrypt bid ${i}: ${err.message}`);
+        }
     }
+
+    console.log("---------------------------------------------------------------\n");
 }
+
+
+
+/****************************************************************
+ * Display the Bid Outputs table
+ ****************************************************************/
+export async function displayAllBidOutputs(deployer, fhevm, blindAuction, contractAddress, useDebug = false) {
+    // Retrieve the total number of bid outputs
+    const totalBids = await blindAuction.getTotalBidAccounts();
+
+    console.log(`\n=== BID OUTPUTS INFO ===`);
+    console.log(`Total number of bidding outputs: ${totalBids}\n`);
+
+    // Print a table header for Bid Outputs
+    console.log("--------------------------------------------");
+    console.log(
+        "| " +
+        padString("ID", 3) +
+        " | " +
+        padString("Deposit", 7) +
+        " | " +
+        padString("Quantity", 8) +
+        " | " +
+        padString("Amount", 6) +
+        " |"
+    );
+    console.log("--------------------------------------------");
+
+    const settlementPrice = await blindAuction.settlementPrice();
+    const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
+    // const decryptSettlementPrice = await decryptAndDisplay(deployer, fhevm, settlementPrice, contractAddress, useDebug, "decrypt64");
+    // Loop through the bid outputs using the contract's getter
+    for (let i = 0; i < totalBids; i++) {
+        const bidOutput = await blindAuction.getBidOutput(i);
+
+
+
+        const decryptedDeposit = await decryptAndDisplay(deployer, fhevm, bidOutput.eDeposit, contractAddress, useDebug, "decrypt64");
+        const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bidOutput.eQuantity, contractAddress, useDebug, "decrypt64");
+
+        // Print a row for the output
+        console.log(
+            "| " +
+            padString(i, 3) +
+            " | " +
+            padString(decryptedDeposit, 7) +
+            " | " +
+            padString(decryptedQuantity, 8) +
+            " | " +
+            padString(BigInt(decryptSettlementPrice * decryptedQuantity), 6) +
+            " |"
+        );
+    }
+
+    // End line
+    console.log("--------------------------------------------\n");
+
+    console.log("SettlementPrice: ", decryptSettlementPrice);
+}
+
 
 
 /**
@@ -268,3 +371,4 @@ export async function approveTokens(fhevm, erc20, tokenAddress, ownerSigner, spe
     );
     await tx.wait();
 }
+
