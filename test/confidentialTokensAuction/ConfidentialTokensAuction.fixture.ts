@@ -10,7 +10,6 @@ export async function deployConfidentialTokensAuctionFixture(
   account: Signer,
   tokenContractAddress: AddressLike,
   sortingLibraryAddress: AddressLike,
-  decryptionHelperAddress: AddressLike,
   totalTokens:BigNumberish,
   biddingTime: BigNumberish,
   isStoppable: boolean
@@ -35,7 +34,6 @@ export async function deployConfidentialTokensAuctionFixture(
   // Deploy the contract without needing to connect again
   const contract = await contractFactory.deploy(
     tokenContractAddress,
-    decryptionHelperAddress,
     totalTokens,
     biddingTime,
     isStoppable

@@ -1,7 +1,8 @@
-import { ethers } from 'hardhat';
+import { ethers, network } from 'hardhat';
 import { expect } from 'chai';
 import { reencryptEuint64, reencryptEbool } from "../reencrypt";
 import { debug } from "../utils";
+import { getFHEGasFromTxReceipt } from "../coprocessorUtils";
 
 /**
  * Increases the EVM time by `seconds` and mines a new block.
@@ -52,38 +53,41 @@ export async function placeBid(fhevm, auctionContract, auctionAddress, bidderSig
 export async function finalizeAuction(contract, batchSize) {
     let stillRunning = true;
     let totalGasUsed = BigInt(0);
+    let totalFHEGasConsumed = 0;
 
-    const tx = await contract.finalizeAuction(batchSize);
+    while (stillRunning) {
+        // 1) Call the contract function
+        const tx = await contract.finalizeAuction(batchSize);
 
-    // while (stillRunning) {
-    //     // 1) Call the contract function
-    //     const tx = await contract.finalizeAuction(batchSize);
+        // 2) Wait for the tx receipt
+        const receipt = await tx.wait();
 
-    //     // 2) Wait for the tx receipt
-    //     const receipt = await tx.wait();
+        if (network.name === "hardhat") {
+            // Calculate FHE gas consumed if on mocked FHEVM
+            const FHEGasConsumed = getFHEGasFromTxReceipt(receipt);
+            totalFHEGasConsumed += FHEGasConsumed;
+        }
 
-    //     // 3) Accumulate gasUsed
-    //     totalGasUsed = totalGasUsed + receipt.gasUsed;
+        // 3) Accumulate gasUsed
+        totalGasUsed += BigInt(receipt.gasUsed);
 
-    //     // 4) Check status
-    //     const ci = await contract.currentIndex();    // currentIndex
-    //     const bc = await contract.bidCounter();      // bidCounter
-    //     const fin = await contract.isFinalized();    // bool
+        // 4) Check status
+        const ci = await contract.currentIndex();    // currentIndex
+        const bc = await contract.bidCounter();      // bidCounter
+        const fin = await contract.isFinalized();    // bool
 
-    //     if (fin || (ci == bc)) {
-    //         stillRunning = false;
-    //     }
-    // }
+        if (fin || ci.toString() === bc.toString()) {
+            stillRunning = false;
+        }
+    }
 
-    console.log("Auction fully finalized!");
-    console.log("Total gas used across all batches:", totalGasUsed.toString());
-
-    // You might also want the total cost in WEI/ETH:
-    // If using a typical network with dynamic gas price:
-    //   - Need the effectiveGasPrice from each receipt
-    //   - Sum up gasUsed[i] * effectiveGasPrice[i].
-    // For simplicity, here we only track total gasUsed (not cost).
+    // Return gas usage data
+    return {
+        totalGasUsed: totalGasUsed.toString(),
+        totalFHEGasConsumed
+    };
 }
+
 
 
 
@@ -179,31 +183,27 @@ function padString(value, length) {
     return strValue + " ".repeat(length - strValue.length);
 }
 
-export async function displayAllBids(deployer, fhevm, blindAuction, contractAddress, useDebug = false) {
+export async function displayAllBids(deployer, fhevm, blindAuction, contractAddress, bidderInfo, useDebug = false) {
     const bidCounter = await blindAuction.bidCounter();
     const totalTokens = await blindAuction.totalTokens();
     const minBidPrice = await blindAuction.minBidPrice();
 
-    console.log(`\n=== BIDS INFO ===`);
-    console.log(`Nb bids: ${bidCounter} | Nb Tokens: ${totalTokens} | Min Bid Price: ${minBidPrice}\n`);
+    console.log(`\n\t\t === BIDS INFO ===`);
+    console.log(`\t\t Nb bids: ${bidCounter} | Nb Tokens: ${totalTokens} | Min Bid Price: ${minBidPrice}\n`);
 
-    console.log("---------------------------------------------------------------");
+    console.log("\t\t -----------------------------------------");
     console.log(
-        "| " +
+        "\t\t | " +
         padString("ID", 3) +
+        " | " +
+        padString("Surname", 10) +
         " | " +
         padString("Price", 7) +
         " | " +
         padString("Quantity", 8) +
-        " | " +
-        padString("Index", 5) +
-        " | " +
-        padString("TotalBuy", 8) +
-        " | " +
-        padString("PartialBuy", 10) +
         " |"
     );
-    console.log("---------------------------------------------------------------");
+    console.log("\t\t -----------------------------------------");
 
     for (let i = 0; i < bidCounter; i++) {
         const bid = await blindAuction.getBid(i);
@@ -211,91 +211,173 @@ export async function displayAllBids(deployer, fhevm, blindAuction, contractAddr
         try {
             const decryptedPrice = await decryptAndDisplay(deployer, fhevm, bid.ePrice, contractAddress, useDebug, "decrypt64");
             const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bid.eQuantity, contractAddress, useDebug, "decrypt64");
-            const decryptedIndex = await decryptAndDisplay(deployer, fhevm, bid.eIndex, contractAddress, useDebug, "decrypt64");
-            // const decryptedTotalBuy = await decryptAndDisplay(deployer, fhevm, bid.eTotalBuy, contractAddress, useDebug, "decryptBool");
-            // const decryptedPartialBuy = await decryptAndDisplay(deployer, fhevm, bid.ePartialBuy, contractAddress, useDebug, "decryptBool");
+
+            // Find the corresponding surname using the bidder's address
+            const bidderAddress = bid.account;
+            const bidder = bidderInfo.find((b) => b.address === bidderAddress);
+
+            // Extract the surname or use "Unknown" if not found
+            const surname = bidder ? bidder.surname : "Unknown";
 
             console.log(
-                "| " +
+                "\t\t | " +
                 padString(i, 3) +
+                " | " +
+                padString(surname, 10) +
                 " | " +
                 padString(decryptedPrice, 7) +
                 " | " +
                 padString(decryptedQuantity, 8) +
-                " | " +
-                padString(decryptedIndex, 5) +
-                " | " +
-                // padString(decryptedTotalBuy, 8) +
-                // " | " +
-                // padString(decryptedPartialBuy, 10) +
                 " |"
             );
         } catch (err) {
-            console.error(`Failed to decrypt bid ${i}: ${err.message}`);
+            console.error(`\t\t Failed to decrypt bid ${i}: ${err.message}`);
         }
     }
 
-    console.log("---------------------------------------------------------------\n");
+    console.log("\t\t -----------------------------------------\n");
 }
 
 
 
-/****************************************************************
- * Display the Bid Outputs table
- ****************************************************************/
-export async function displayAllBidOutputs(deployer, fhevm, blindAuction, contractAddress, useDebug = false) {
-    // Retrieve the total number of bid outputs
-    const totalBids = await blindAuction.getTotalBidAccounts();
 
-    console.log(`\n=== BID OUTPUTS INFO ===`);
-    console.log(`Total number of bidding outputs: ${totalBids}\n`);
+/**
+ * @notice Display all bid outputs for specified bidders
+ * @param bidderInfo List of objects containing bidder addresses and surnames
+ */
+export async function displayAllBidOutputs(
+    deployer,
+    fhevm,
+    blindAuction,
+    contractAddress,
+    bidderInfo,
+    useDebug = false
+) {
+
+    const settlementPrice = await blindAuction.settlementPrice();
+    const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
+
+    console.log(`\n\t\t === BID OUTPUTS INFO ===`);
+    console.log(`\t\t Nb bidders: ${bidderInfo.length} | Settlement Price: ${decryptSettlementPrice} \n`);
+
+
 
     // Print a table header for Bid Outputs
-    console.log("--------------------------------------------");
+    console.log("\t\t ----------------------------------------------");
     console.log(
-        "| " +
-        padString("ID", 3) +
+        "\t\t | " +
+        padString("Surname", 10) +
         " | " +
         padString("Deposit", 7) +
         " | " +
         padString("Quantity", 8) +
         " | " +
-        padString("Amount", 6) +
+        padString("Amount", 8) +
         " |"
     );
-    console.log("--------------------------------------------");
-
-    const settlementPrice = await blindAuction.settlementPrice();
-    const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
-    // const decryptSettlementPrice = await decryptAndDisplay(deployer, fhevm, settlementPrice, contractAddress, useDebug, "decrypt64");
-    // Loop through the bid outputs using the contract's getter
-    for (let i = 0; i < totalBids; i++) {
-        const bidOutput = await blindAuction.getBidOutput(i);
+    console.log("\t\t ----------------------------------------------");
 
 
 
+    // Loop through the provided bidders
+    for (const { address, surname } of bidderInfo) {
+        // Retrieve the bid output for the current address
+        const bidOutput = await blindAuction.getBidOutput(address);
+
+        // Decrypt the relevant fields
         const decryptedDeposit = await decryptAndDisplay(deployer, fhevm, bidOutput.eDeposit, contractAddress, useDebug, "decrypt64");
         const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bidOutput.eQuantity, contractAddress, useDebug, "decrypt64");
 
         // Print a row for the output
         console.log(
-            "| " +
-            padString(i, 3) +
+            "\t\t | " +
+            padString(surname, 10) +
             " | " +
             padString(decryptedDeposit, 7) +
             " | " +
             padString(decryptedQuantity, 8) +
             " | " +
-            padString(BigInt(decryptSettlementPrice * decryptedQuantity), 6) +
+            padString(BigInt(decryptSettlementPrice * decryptedQuantity), 8) +
             " |"
         );
     }
 
     // End line
-    console.log("--------------------------------------------\n");
+    console.log("\t\t ----------------------------------------------\n");
 
-    console.log("SettlementPrice: ", decryptSettlementPrice);
 }
+
+
+// /**
+//  * @notice Display all bid outputs based on the sorted `bidsIndexs` array
+//  * @param bidderInfo List of objects containing bidder addresses and surnames
+//  */
+// export async function displayAllBidOutputs(
+//     deployer,
+//     fhevm,
+//     blindAuction,
+//     contractAddress,
+//     bidderInfo,
+//     useDebug = false
+// ) {
+//     const settlementPrice = await blindAuction.settlementPrice();
+//     const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
+
+//     // Fetch the sorted bid indices
+//     const bidsIndexs = await blindAuction.bidsIndexs();
+//     console.log(`\n=== BID OUTPUTS INFO ===`);
+//     console.log(`Total number of bidders: ${bidsIndexs.length} | Settlement price: ${decryptSettlementPrice} \n`);
+
+//     // Print a table header for Bid Outputs
+//     console.log("--------------------------------------------");
+//     console.log(
+//         "| " +
+//         padString("Surname", 10) +
+//         " | " +
+//         padString("Deposit", 7) +
+//         " | " +
+//         padString("Quantity", 8) +
+//         " | " +
+//         padString("Amount", 6) +
+//         " |"
+//     );
+//     console.log("--------------------------------------------");
+
+//     // Loop through the sorted indices
+//     for (let i = 0; i < bidsIndexs.length; i++) {
+//         const bidIndex = bidsIndexs[i]; // Sorted index
+//         const bid = await blindAuction.getBid(bidIndex); // Fetch the bid using the index
+
+//         // Retrieve the address of the bidder
+//         const bidderAddress = bid.bidder;
+
+//         // Find the surname for the current bidder
+//         const bidder = bidderInfo.find((b) => b.address === bidderAddress);
+//         const surname = bidder ? bidder.surname : "Unknown";
+
+//         // Decrypt the bid fields
+//         const decryptedDeposit = await decryptAndDisplay(deployer, fhevm, bid.eDeposit, contractAddress, useDebug, "decrypt64");
+//         const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bid.eQuantity, contractAddress, useDebug, "decrypt64");
+
+//         // Print the row for the current bidder
+//         console.log(
+//             "| " +
+//             padString(surname, 10) +
+//             " | " +
+//             padString(decryptedDeposit, 7) +
+//             " | " +
+//             padString(decryptedQuantity, 8) +
+//             " | " +
+//             padString(BigInt(decryptSettlementPrice * decryptedQuantity), 6) +
+//             " |"
+//         );
+//     }
+
+//     console.log("--------------------------------------------\n");
+//     console.log("SettlementPrice: ", decryptSettlementPrice);
+// }
+
+
 
 
 
@@ -314,6 +396,35 @@ export function logDecryptedBid(decryptedBid, bidIndex) {
     console.log(`  Partial Buy: ${decryptedBid.partialBuy}`);
     console.log("-------------------------------------------");
 }
+
+
+
+/**
+ * Retrieves the decrypted balance of a specific account.
+ * 
+ * @param {Object} account - The account object whose balance is being retrieved.
+ * @param {Object} fhevm - The FHEVM instance used for encryption and decryption operations.
+ * @param {Object} erc20 - The ERC20 contract instance used to fetch the balance.
+ * @param {string} tokenAddress - The address of the ERC20 token contract.
+ * 
+ * @returns {BigInt} - The decrypted balance of the account.
+ */
+export async function getDecryptedBalance(account, fhevm, erc20, tokenAddress) {
+    try {
+        // Retrieve the encrypted balance from the ERC20 contract
+        const encryptedBalanceHandle = await erc20.balanceOf(account.address);
+
+        // Decrypt the balance using the FHEVM instance
+        const decryptedBalance = await reencryptEuint64(account, fhevm, encryptedBalanceHandle, tokenAddress);
+
+        // Return the decrypted balance as a BigInt
+        return BigInt(decryptedBalance);
+    } catch (error) {
+        console.error(`Failed to get decrypted balance for ${account.address}:`, error);
+        throw error;
+    }
+}
+
 
 /**
  * Checks the decrypted balance of a given account against an expected value.

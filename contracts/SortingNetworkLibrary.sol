@@ -19,6 +19,9 @@ library SortingNetworkLibrary {
      * A minimal-depth sorting network for 4 inputs has 3 layers.
      */
     function getNumberOfLayers(uint8 inputSize) internal pure returns (uint8) {
+        if (inputSize == 2) {
+            return 1;
+        }
         if (inputSize == 4) {
             return 3;
         }
@@ -26,6 +29,37 @@ library SortingNetworkLibrary {
             return 14;
         }
         return 0;
+    }
+
+    /**
+     * @dev Verifies the hash for a specific layer of a sorting network.
+     * @param inputSize The size of the sorting network input.
+     * @param layerIndex The index of the layer to verify.
+     * @return True if the hash matches the precomputed hash, otherwise false.
+     */
+    function getNetworkLayer(uint8 inputSize, uint8 layerIndex) external pure returns (uint8[] memory) {
+        if (inputSize == 2) {
+            return getNetwork2Layer(layerIndex);
+        }
+        if (inputSize == 4) {
+            return getNetwork4Layer(layerIndex);
+        }
+        if (inputSize == 32) {
+            return getNetwork32Layer(layerIndex);
+        }
+        revert("Sorting network not defined for this input size");
+    }
+
+    function getNetwork2Layer(uint8 layerIndex) internal pure returns (uint8[] memory) {
+        if (layerIndex == 0) {
+            // layer 0 has 2 comparator pairs
+            //   (0,1)
+            uint8[] memory pairs = new uint8[](2);
+            pairs[0] = 0;
+            pairs[1] = 1;
+            return pairs;
+        }
+        revert("Invalid layer index");
     }
 
     /**
@@ -512,22 +546,5 @@ library SortingNetworkLibrary {
         }
 
         revert("Invalid layer index");
-    }
-
-    /**
-     * @dev Verifies the hash for a specific layer of a sorting network.
-     * @param inputSize The size of the sorting network input.
-     * @param layerIndex The index of the layer to verify.
-     * @return True if the hash matches the precomputed hash, otherwise false.
-     */
-    function getNetworkLayer(uint8 inputSize, uint8 layerIndex) external pure returns (uint8[] memory) {
-        if (inputSize == 4) {
-            return getNetwork4Layer(layerIndex);
-        }
-
-        if (inputSize == 32) {
-            return getNetwork32Layer(layerIndex);
-        }
-        revert("Sorting network not defined for this input size");
     }
 }
