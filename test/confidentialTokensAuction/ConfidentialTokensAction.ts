@@ -41,7 +41,7 @@ describe('Test ConfidentialTokensAuction', function () {
     const receipt = await ethers.provider.getTransactionReceipt(tx);
 
     // Gas log (kept)
-    console.log(`Gas used for the sorting:       ${receipt.gasUsed.toString()}`);
+    console.log(`Gas used sorting Library deployment:       ${receipt.gasUsed.toString()}`);
     // console.log(`Gas price (wei): ${receipt.effectiveGasPrice.toString()}`);
   });
 
