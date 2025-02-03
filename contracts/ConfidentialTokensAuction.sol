@@ -12,190 +12,141 @@ import { ConfidentialERC20 } from "fhevm-contracts/contracts/token/ERC20/Confide
 
 import { SortingNetworkLibrary } from "./SortingNetworkLibrary.sol";
 
-/// @notice Main contract for the blind auction
+/// @title Confidential Tokens Auction
+/// @notice Main contract for a blind auction using Fully Homomorphic Encryption (FHE) operations.
 contract ConfidentialTokensAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatewayConfig, GatewayCaller {
-    /// @notice Auction end time
+    // --------------------------------------------------
+    // Auction Parameters and State
+    // --------------------------------------------------
+
+    /// @notice Auction end time (Unix timestamp)
     uint256 public endTime;
 
-    /// @notice The number of tokens to buy
+    /// @notice Total tokens to be sold (using 64-bit as token amounts are assumed small)
     uint64 public totalTokens;
 
-    /// @notice Encrypted representation of totalTokens
-    euint256 private encryptedTotalTokens;
+    /// @notice The maximum number of bids allowed (immutable; fixed at 32)
+    uint8 public immutable MAX_BIDS;
 
-    /// @notice The maximum number of bids allowed, set at deployment
-    /// @dev This value is immutable and set during contract deployment
-    uint256 public immutable MAX_BIDS;
-
-    /// @notice Minimum bid price required to participate (encrypted)
+    /// @notice Encrypted minimum bid price required to participate
     euint64 public minBidPrice;
-
-    ebool xBool;
-    bool public yBool;
-
-    /// @dev Tracks the latest decryption request ID
-    uint256 public latestRequestID;
-
-    /// @notice Stores the amount (quantity, deposit, etc.) for each bidder
-    struct BidOutPut {
-        address account; // Bidder's address
-        euint64 eQuantity; // Encrypted quantity of tokens
-        euint64 eAmount; // Encrypted total cost (price * quantity)
-        euint64 eDeposit; // Encrypted deposit locked in
-        bool canClaim; // Indicates whether the bidder can claim
-    }
-
-    /// @notice Mapping from a bidder's address to their output data
-    mapping(address => BidOutPut) private bidsOutput;
-
-    /// @notice List of unique addresses that have placed bids
-    address[] private bidAccounts;
-
-    /// @notice Contains the core data for each bid
-    struct BidData {
-        address account; // Bidder's address
-        euint64 ePrice; // Encrypted price per token
-        euint64 eQuantity; // Encrypted quantity of tokens
-        euint64 eIndex; // Encrypted ranking index
-        ebool eTotalBuy; // Flag to indicate if the entire bid is accepted
-        ebool ePartialBuy; // Flag to indicate a partial buy
-    }
-
-    /// @notice Mapping of bidId => BidData
-    mapping(uint256 => BidData) private bids;
-
-    uint256[] public bidsIndexs;
-
-    mapping(uint256 => ebool) public encryptedComparaisons;
-    mapping(uint256 => bool) public decryptedComparaisons;
-
-    /// @notice Count of total bids submitted
-    uint256 public bidCounter;
-
-    /// @notice The total number of tokens successfully allocated (encrypted)
-    euint256 public encryptedTotalBuys;
-
-    /// @notice Number of total buys bids
-    euint64 public countTotalBuys;
-
-    /// @notice Number of partial buys
-    euint64 public totalPartialBuys;
-
-    /// @notice The remaining tokens after full buys (encrypted)
-    euint256 public encryptedRemaining;
 
     /// @notice The token contract used for encrypted bids
     ConfidentialERC20 public tokenContract;
 
-    /// @notice Flag indicating whether the auction object has been claimed
-    /// @dev WARNING : If there is a draw, only the first highest bidder will get the prize
-    ebool private objectClaimed;
+    /// @notice Encrypted settlement price (set after finalization)
+    euint64 public settlementPrice;
+    /// @notice Decrypted settlement price (set via callback)
+    uint64 public decryptedSettlementPrice;
+    /// @notice Indicates whether the settlement price has been decrypted
+    bool public isSettlementPriceDecrypted;
 
-    /// @notice Flag to check if the token has been transferred to the beneficiary
-    bool public tokensTransferred;
+    /// @notice Encrypted remaining token state (i.e. tokens available)
+    euint64 public eRemainState;
 
-    /// @notice Flag to determine if the auction can be stopped manually
-    bool public stoppable;
+    /// @notice Structure to hold auction state variables in one storage slot.
+    struct AuctionState {
+        uint8 swapCallCount; // Number of swap() calls executed (used for sorting layers)
+        uint8 currentIndex;  // Current index for processing bids during finalization
+        bool isFinalized;    // True if the auction is finalized
+    }
+    AuctionState public auctionState;
 
-    /// @notice Flag to check if the auction has been manually stopped
-    bool public manuallyStopped = false;
+    // --------------------------------------------------
+    // Bid Storage
+    // --------------------------------------------------
 
-    /// @notice Error thrown when a function is called too early
-    /// @dev Includes the time when the function can be called
+    /// @notice Structure to hold bid output information for a bidder.
+    struct BidOutput {
+        address account;      // Bidder's address
+        euint64 eQuantity;    // Encrypted quantity of tokens awarded
+        euint64 eAmount;      // Encrypted total cost (price * quantity)
+        euint64 eDeposit;     // Encrypted deposit locked in
+        bool canClaim;        // True if the bidder is allowed to claim tokens
+    }
+    /// @notice Mapping from bidder address to their bid output.
+    mapping(address => BidOutput) private bidOutputs;
+
+    /// @notice Structure to hold core bid data.
+    struct BidData {
+        address account;   // Bidder's address
+        euint64 ePrice;    // Encrypted price per token
+        euint64 eQuantity; // Encrypted bid quantity
+    }
+    /// @notice Mapping from bid ID (uint8) to its bid data.
+    mapping(uint8 => BidData) private bids;
+
+    /// @notice Array of bid indices (sorted order of bid IDs)
+    uint8[] public sortedBidIndices;
+
+    // --------------------------------------------------
+    // Auxiliary Mappings for FHE Comparisons
+    // --------------------------------------------------
+
+    mapping(uint256 => ebool) public encryptedComparisons;
+    mapping(uint256 => bool) public decryptedComparisons;
+
+    /// @notice Total number of bids submitted (uint8 because MAX_BIDS = 32)
+    uint8 public bidCounter;
+
+    // --------------------------------------------------
+    // Custom Errors
+    // --------------------------------------------------
+
+    /// @notice Thrown when a function is called before it is allowed.
     error TooEarly(uint256 time);
-
-    /// @notice Error thrown when a function is called too late
-    /// @dev Includes the time after which the function cannot be called
+    /// @notice Thrown when a function is called after its allowed time.
     error TooLate(uint256 time);
 
-    euint64 public settlementPrice;
-
-    // Store the count of function calls
-    uint8 public swapCallCount;
-
-    // Pour savoir si TOUT est terminé
-    bool public isFinalized;
-
-    // --- Pour la logique par batch ---
-    // On mémorise la progression dans le traitement
-    uint256 public currentIndex; // Index du prochain bid à traiter
-    euint64 public eRemainState; // État "restant" crypté
-    ebool public soldOutState; // État "déjà épuisé ?" crypté
-
-    // using SortingNetworkLibrary for sortingLibrary;
+    // --------------------------------------------------
+    // Constructor
+    // --------------------------------------------------
 
     /**
-     * @notice Constructor to initialize the auction
-     * @param _tokenContract Address of the ConfidentialERC20 token contract used for bidding
-     * @param _totalTokens The number of tokens to be sold
-     * @param biddingTime Duration of the auction in seconds
-     * @param isStoppable Flag to determine if the auction can be stopped manually
+     * @notice Initialize the auction.
+     * @param _tokenContract Address of the ConfidentialERC20 token contract used for bidding.
+     * @param _totalTokens Number of tokens to be sold.
+     * @param biddingTime Duration of the auction in seconds.
      */
     constructor(
         ConfidentialERC20 _tokenContract,
         uint64 _totalTokens,
-        uint256 biddingTime,
-        bool isStoppable
+        uint256 biddingTime
     ) Ownable(msg.sender) {
         tokenContract = _tokenContract;
         endTime = block.timestamp + biddingTime;
-        objectClaimed = TFHE.asEbool(false);
-        TFHE.allowThis(objectClaimed);
-        tokensTransferred = false;
-        bidCounter = 0;
-        stoppable = isStoppable;
         totalTokens = _totalTokens;
+        bidCounter = 0;
 
-        swapCallCount = 0;
-        // For demonstration: if you had a `maxBids` param, you could do:
-        // require(maxBids > 0, "Maximum bids must be greater than zero");
-        // MAX_BIDS = maxBids;
-        // In your snippet, we keep it just as an example
-        MAX_BIDS = 9999; // or any large number, purely as a placeholder
+        // Set the maximum number of bids (fixed at 32)
+        MAX_BIDS = 32;
 
-        encryptedTotalTokens = TFHE.asEuint256(totalTokens);
-        TFHE.allowThis(encryptedTotalTokens);
-
-        countTotalBuys = TFHE.asEuint64(0);
-        TFHE.allowThis(countTotalBuys);
-
-        totalPartialBuys = TFHE.asEuint64(0);
-        TFHE.allowThis(totalPartialBuys);
-
-        xBool = TFHE.asEbool(true);
-        TFHE.allowThis(xBool);
-
+        isSettlementPriceDecrypted = false;
         settlementPrice = TFHE.asEuint64(0);
         TFHE.allowThis(settlementPrice);
 
-        eRemainState = TFHE.asEuint64(totalTokens); // nombre de tokens dispo
+        eRemainState = TFHE.asEuint64(totalTokens); // Available tokens (encrypted)
         TFHE.allowThis(eRemainState);
 
-        soldOutState = TFHE.asEbool(false); // pas encore épuisé
-        TFHE.allowThis(soldOutState);
-
-        currentIndex = 0;
-
-        isFinalized = false;
+        auctionState = AuctionState({ swapCallCount: 0, currentIndex: 0, isFinalized: false });
     }
 
-    /**
-     * @notice Event emitted when a new bid is submitted.
-     * @param bidder Address of the bidder.
-     * @param bidId Unique identifier for the bid.
-     * @param price Encrypted price per token.
-     * @param quantity Encrypted quantity of tokens.
-     */
-    event BidSubmitted(address indexed bidder, uint256 bidId, euint64 price, euint64 quantity);
+    // --------------------------------------------------
+    // Bid Submission
+    // --------------------------------------------------
 
     /**
-     * @notice Submit a bid with an encrypted price and quantity
-     * @dev Transfers tokens from the bidder to the contract
-     * @param encryptedPrice The encrypted bid price
-     * @param encryptedQuantity The encrypted bid quantity
-     * @param inputProof Proof for the encrypted price/quantity
+     * @notice Submit a bid with an encrypted price and quantity.
+     * @dev Transfers tokens from the bidder to this contract.
+     * @param encryptedPrice The encrypted bid price.
+     * @param encryptedQuantity The encrypted bid quantity.
+     * @param inputProof Proof for the encrypted price/quantity.
      */
-    function bid(einput encryptedPrice, einput encryptedQuantity, bytes calldata inputProof) external onlyBeforeEnd {
+    function placeBid(
+        einput encryptedPrice,
+        einput encryptedQuantity,
+        bytes calldata inputProof
+    ) external onlyBeforeEnd {
         euint64 price = TFHE.asEuint64(encryptedPrice, inputProof);
         euint64 quantity = TFHE.asEuint64(encryptedQuantity, inputProof);
         TFHE.allowThis(price);
@@ -203,326 +154,201 @@ contract ConfidentialTokensAuction is SepoliaZamaFHEVMConfig, Ownable2Step, Sepo
         TFHE.allow(price, msg.sender);
         TFHE.allow(quantity, msg.sender);
 
-        // Calculate the total amount to lock based on price * quantity
+        // Calculate total amount to lock: price * quantity.
         euint64 amountToLock = TFHE.mul(price, quantity);
-
-        // Allow the contract and the caller to use this ciphertext
         TFHE.allowThis(amountToLock);
         TFHE.allow(amountToLock, msg.sender);
 
-        BidOutPut storage bidOutput = bidsOutput[msg.sender];
-        bidOutput.eDeposit = TFHE.add(bidOutput.eDeposit, amountToLock);
+        // Update bidder output: record deposit and initialize awarded quantity.
+        BidOutput storage output = bidOutputs[msg.sender];
+        output.eDeposit = TFHE.add(output.eDeposit, amountToLock);
+        output.canClaim = false;
+        output.eQuantity = TFHE.asEuint64(0);
+        TFHE.allowThis(output.eQuantity);
+        TFHE.allow(output.eQuantity, msg.sender);
+        TFHE.allowThis(output.eDeposit);
+        TFHE.allow(output.eDeposit, msg.sender);
 
-        TFHE.allowThis(bidOutput.eDeposit);
-        TFHE.allow(bidOutput.eDeposit, msg.sender);
-
-        // Approve and transfer the tokens from the bidder to this contract
+        // Approve and transfer tokens from bidder to this contract.
         TFHE.allowTransient(amountToLock, address(tokenContract));
         tokenContract.transferFrom(msg.sender, address(this), amountToLock);
 
-        // Store the new bid
-        BidData storage newBid = bids[bidCounter];
-        newBid.account = msg.sender;
-        newBid.ePrice = price;
-        newBid.eQuantity = quantity;
-        newBid.eIndex = TFHE.asEuint64(bidCounter);
-        TFHE.allowThis(newBid.eIndex);
-        bidsIndexs.push(bidCounter);
+        // Store the bid and add its index to the sorted array.
+        bids[bidCounter] = BidData({ account: msg.sender, ePrice: price, eQuantity: quantity });
+        sortedBidIndices.push(bidCounter);
 
         bidCounter++;
-
-        emit BidSubmitted(msg.sender, bidCounter, price, quantity);
     }
 
+    // --------------------------------------------------
+    // Auction Finalization
+    // --------------------------------------------------
+
     /**
-     * @notice Event emitted when the auction is finalized.
-     * @param timestamp The time at which the auction was finalized.
-     * @param totalBuys The total encrypted quantity of tokens bought during the auction.
-     * @param remainingTokens The remaining encrypted quantity of tokens after the auction.
+     * @notice Finalizes the auction by processing bids in batches.
+     * @param _batchSize Number of bids to process in this batch.
      */
-    event AuctionFinalized(uint256 indexed timestamp, euint64 totalBuys, euint64 remainingTokens);
+    function finalizeAuction(uint256 _batchSize) external onlyOwner onlyAfterEnd {
+        require(!auctionState.isFinalized, "Auction already finalized");
 
-    function finalizeAuction(uint256 _batchSize) public onlyOwner onlyAfterEnd {
-        // If already finalized, revert
-        require(!isFinalized, "All bids already finalized");
-
-        // --- Edge Case #1: No bids ---
+        // Edge Case 1: No bids submitted.
         if (bidCounter == 0) {
-            // No bids placed. We finalize immediately.
-            // eRemainState stays as it is (no tokens sold).
-            // No settlementPrice to set (or keep it at a default).
-            isFinalized = true;
+            auctionState.isFinalized = true;
             return;
         }
 
-        euint64 eRemain = eRemainState;
-
-        // --- Edge Case #2: Single bid ---
+        // Edge Case 2: Only one bid submitted.
         if (bidCounter == 1) {
-            // There's only one bid, so no sorting needed
-            // We can skip the entire batch-processing loop.
-
-            // The only bid
-            BidData storage singleBid = bids[bidsIndexs[0]];
-
-            // fill = min(singleBid.eQuantity, eRemain)
-            ebool isPartial = TFHE.ge(singleBid.eQuantity, eRemain);
-            euint64 fill = TFHE.select(isPartial, eRemain, singleBid.eQuantity);
-
-            // Update the single bidder’s final quantity
-            BidOutPut storage bidOutput = bidsOutput[singleBid.account];
-            bidOutput.eQuantity= fill;
-            TFHE.allowThis(bidOutput.eQuantity);
-            bidOutput.canClaim = true;
-
-            // settlementPrice = bid price if usedSomeTokens == true
-            settlementPrice = singleBid.ePrice;
-            TFHE.allowThis(settlementPrice);
-
-            // Finalize
-            isFinalized = true;
-            return;
-        }
-
-        // --- Normal Case: bidCounter > 1 ---
-        // Vérifie qu'on a bien exécuté le tri (Sorting Network) sur les bids
-        require(
-            swapCallCount >= SortingNetworkLibrary.getNumberOfLayers(uint8(bidCounter)),
-            "You cannot finalize yet, sorting is not complete"
-        );
-
-        // 1) On détermine la plage d'enchères à traiter maintenant
-        uint256 end = currentIndex + _batchSize;
-        if (end > bidCounter) {
-            end = bidCounter; // on ne dépasse pas le total
-        }
-
-        // 2) Récupération en local pour travailler plus vite
-        ebool soldOut = soldOutState;
-
-        // 3) Boucle sur les bids triés [currentIndex .. end-1]
-        for (uint256 i = currentIndex; i < end; i++) {
-            // Récupération du bid (trié par ordre décroissant de prix)
-            BidData storage currentBid = bids[bidsIndexs[i]];
-
-            // 3.1) Calcul de fill = min(currentBid.eQuantity, eRemain)
-            ebool isPartial = TFHE.gt(currentBid.eQuantity, eRemain);
-            euint64 fill = TFHE.select(isPartial, eRemain, currentBid.eQuantity);
+            BidData storage singleBid = bids[sortedBidIndices[0]];
+            // Determine fill amount as the minimum of bid quantity and remaining tokens.
+            euint64 fill = TFHE.min(singleBid.eQuantity, eRemainState);
             TFHE.allowThis(fill);
+            TFHE.allow(fill, msg.sender);
+            bidOutputs[singleBid.account].eQuantity = fill;
+            bidOutputs[singleBid.account].canClaim = true;
+            settlementPrice = singleBid.ePrice;
 
-            // 3.2) eRemain = eRemain - fill
-            eRemain = TFHE.sub(eRemain, fill);
-            TFHE.allowThis(eRemain);
+            // Request decryption of settlementPrice.
+            uint256[] memory cts = new uint256[](1);
+            cts[0] = Gateway.toUint256(settlementPrice);
+            Gateway.requestDecryption(cts, this.callbackSettlementPrice.selector, 0, block.timestamp + 100, false);
 
-            // 3.3) Enregistre la quantité effectivement achetée
-            // ==> On ACCUMULE la quantité
-            BidOutPut storage bidOutput = bidsOutput[currentBid.account];
-
-            euint64 newQuantity = TFHE.add(bidOutput.eQuantity, fill);
-            TFHE.allowThis(newQuantity);
-            bidOutput.eQuantity = newQuantity;
-
-            bidOutput.canClaim = true; // autorise le claim
-
-            // 3.4) Vérifie si on vient de s'épuiser grâce à ce bid
-            ebool usedSomeTokens = TFHE.gt(fill, TFHE.asEuint64(0));
-            ebool wasNotSoldBefore = TFHE.not(soldOut);
-
-            ebool isNowEmpty = TFHE.eq(eRemain, TFHE.asEuint64(0));
-            ebool doSetPrice = TFHE.and(TFHE.and(usedSomeTokens, wasNotSoldBefore), isNowEmpty);
-
-            // => On met settlementPrice = currentBid.ePrice si doSetPrice == true
-            settlementPrice = TFHE.select(doSetPrice, currentBid.ePrice, settlementPrice);
-            TFHE.allowThis(settlementPrice);
-
-            // 3.5) Met à jour 'soldOut' si on est tombé à 0
-            soldOut = TFHE.or(soldOut, isNowEmpty);
-            TFHE.allowThis(soldOut);
-
-            // Optionnel : on stocke l'adresse du bidder pour itérations futures
-            // bidAccounts.push(currentBid.account);
-        }
-
-        // 4) Stocker l’état mis à jour
-        eRemainState = eRemain;
-        TFHE.allowThis(eRemainState);
-
-        soldOutState = soldOut;
-        TFHE.allowThis(soldOutState);
-
-        // 5) On a traité `end - currentIndex` enchères ; on met à jour currentIndex
-        currentIndex = end;
-
-        // 6) Si on a tout traité (end == bidCounter), on fait la logique finale
-        if (currentIndex == bidCounter) {
-            // Vérifier s'il reste des tokens et qu'on n'a jamais été soldOut
-            ebool isStillRemaining = TFHE.gt(eRemain, TFHE.asEuint64(0));
-            ebool mustSetLastPrice = TFHE.and(isStillRemaining, TFHE.not(soldOut));
-
-            // On récupère le dernier bid
-            BidData memory lastBid = bids[bidsIndexs[bidCounter - 1]];
-
-            // On sélectionne son prix s'il reste encore des tokens
-            settlementPrice = TFHE.select(mustSetLastPrice, lastBid.ePrice, settlementPrice);
-            TFHE.allowThis(settlementPrice);
-
-            isFinalized = true;
-        }
-    }
-
-    function swap() public onlyOwner onlyAfterEnd {
-        if (bidCounter == 1) {
-            swapCallCount = 1;
+            auctionState.isFinalized = true;
             return;
         }
-        require(swapCallCount < SortingNetworkLibrary.getNumberOfLayers(uint8(bidCounter)), "You cannot swap");
 
-        uint8[] memory pairs = SortingNetworkLibrary.getNetworkLayer(uint8(bidCounter), swapCallCount);
-
-        // Iterate over the pairs and perform swaps
-        for (uint256 index = 0; index < pairs.length; index += 2) {
-            uint8 i = pairs[index];
-            uint8 j = pairs[index + 1];
-
-            BidData memory temp1 = bids[bidsIndexs[i]];
-            BidData memory temp2 = bids[bidsIndexs[j]];
-
-            ebool isGreater = TFHE.gt(temp2.ePrice, temp1.ePrice);
-            TFHE.allowThis(isGreater);
-
-            uint256 key = getComparisonKey(bidsIndexs[i], bidsIndexs[j]);
-            encryptedComparaisons[key] = isGreater;
-
-            requestCompareOnePair(i, j);
-        }
-
-        // requestCompareNPairs(pairs);
-        swapCallCount += 1;
-        // requestBool(); // Uncomment if needed elsewhere
-    }
-
-    function requestCompareOnePair(uint256 smallerID, uint256 biggerID) public {
-        uint256[] memory cts = new uint256[](1);
-        uint256 key = getComparisonKey(bidsIndexs[smallerID], bidsIndexs[biggerID]);
-        cts[0] = Gateway.toUint256(encryptedComparaisons[key]);
-
-        // console.log("*****SWAP: ", bidsIndexs[smallerID], ", ", bidsIndexs[biggerID]);
-        // console.log("Encrypted Comparison for key ", key, ": ", cts[0]);
-
-        uint256 requestID = Gateway.requestDecryption(
-            cts,
-            this.compareOnePairCallback.selector,
-            0,
-            block.timestamp + 100,
-            false
+        // Ensure that all swap (sorting) layers have been completed.
+        require(
+            auctionState.swapCallCount >= SortingNetworkLibrary.getNumberOfLayers(bidCounter),
+            "Sorting incomplete"
         );
 
-        // console.log("-------key: ", key);
-        // console.log("-------requestID: ", requestID);
+        // Process bids in the current batch.
+        euint64 remain = eRemainState;
+        euint64 finalPrice = settlementPrice;
+        uint8 batchSize = uint8(_batchSize);
+        uint8 endIndex = auctionState.currentIndex + batchSize > bidCounter
+            ? bidCounter
+            : auctionState.currentIndex + batchSize;
 
-        addParamsUint256(requestID, smallerID);
-        addParamsUint256(requestID, biggerID);
-    }
+        // Process each bid in sorted order.
+        for (uint8 i = auctionState.currentIndex; i < endIndex; i++) {
+            BidData storage bidData = bids[sortedBidIndices[i]];
+            euint64 oldRemain = remain;
+            euint64 fill = TFHE.min(bidData.eQuantity, oldRemain);
 
-    function compareOnePairCallback(uint256 requestID, bool result) public onlyGateway returns (bool) {
-        uint256[] memory params = getParamsUint256(requestID);
-        uint256 smallerID = params[0];
-        uint256 biggerID = params[1];
+            bidOutputs[bidData.account].eQuantity = TFHE.add(bidOutputs[bidData.account].eQuantity, fill);
+            TFHE.allowThis(bidOutputs[bidData.account].eQuantity);
+            TFHE.allow(bidOutputs[bidData.account].eQuantity, bidData.account);
+            bidOutputs[bidData.account].canClaim = true;
 
-        // console.log("Callback invoked for requestID: ", requestID);
-        // console.log("Decryption result: ", result);
-
-        decryptedComparaisons[getComparisonKey(smallerID, biggerID)] = result;
-
-        //swap the indexs
-        if (result) {
-            uint256 temp = bidsIndexs[biggerID];
-            bidsIndexs[biggerID] = bidsIndexs[smallerID];
-            bidsIndexs[smallerID] = temp;
+            // If this bid fills the remaining tokens, update the settlement price.
+            ebool isLastFill = TFHE.eq(fill, oldRemain);
+            finalPrice = TFHE.select(
+                TFHE.and(TFHE.gt(fill, TFHE.asEuint64(0)), isLastFill),
+                bidData.ePrice,
+                finalPrice
+            );
+            remain = TFHE.sub(oldRemain, fill);
         }
 
-        return result;
-    }
+        // Update state variables after batch processing.
+        eRemainState = remain;
+        settlementPrice = finalPrice;
+        TFHE.allowThis(eRemainState);
+        TFHE.allowThis(settlementPrice);
+        auctionState.currentIndex = endIndex;
 
-    function getComparisonKey(uint256 smallerID, uint256 biggerID) public pure returns (uint256) {
-        // Always pack smaller first, bigger second
-        // return keccak256(abi.encodePacked(smallerID, biggerID));
-        uint256 result = (smallerID + biggerID) + (smallerID * biggerID);
-        return result;
+        // If all bids have been processed, finalize auction and request decryption.
+        if (auctionState.currentIndex == bidCounter) {
+            ebool hasRemaining = TFHE.gt(eRemainState, TFHE.asEuint64(0));
+            settlementPrice = TFHE.select(hasRemaining, bids[sortedBidIndices[bidCounter - 1]].ePrice, settlementPrice);
+
+            uint256[] memory cts = new uint256[](1);
+            cts[0] = Gateway.toUint256(settlementPrice);
+            Gateway.requestDecryption(cts, this.callbackSettlementPrice.selector, 0, block.timestamp + 100, false);
+
+            auctionState.isFinalized = true;
+        }
     }
 
     /**
-     * @notice Get the bid data of a specific index
-     * @dev Can be used in a reencryption request.
-     * @param index The ID of the bid.
-     * @return The encrypted BidData struct.
+     * @notice Callback function invoked by the Gateway to deliver the decrypted settlement price.
+     * @param decryptedInput The decrypted settlement price.
      */
-    function getBid(uint256 index) external view returns (BidData memory) {
+    function callbackSettlementPrice(uint256, uint64 decryptedInput) public onlyGateway {
+        decryptedSettlementPrice = decryptedInput;
+        isSettlementPriceDecrypted = true;
+    }
+
+    // --------------------------------------------------
+    // Public Getters
+    // --------------------------------------------------
+
+    /**
+     * @notice Returns the bid data for a given bid index.
+     * @param index The bid ID.
+     * @return The corresponding BidData struct.
+     */
+    function getBid(uint8 index) external view returns (BidData memory) {
         return bids[index];
     }
 
     /**
-     * @notice Retrieve a BidOutPut by an address
-     * @param bidder The address of the bidder
-     * @return The corresponding BidOutPut struct
+     * @notice Retrieves the bid output for the caller.
+     * @return The corresponding BidOutput struct.
      */
-    function getBidOutput(address bidder) public view returns (BidOutPut memory) {
-        return bidsOutput[bidder];
+    function getBidOutput() public view returns (BidOutput memory) {
+        return bidOutputs[msg.sender];
+    }
+
+    // --------------------------------------------------
+    // Claim and Withdraw Functions
+    // --------------------------------------------------
+
+    /**
+     * @notice Modifier to require that the settlement price has been decrypted.
+     */
+    modifier onlyWhenSettlementPriceDecrypted() {
+        require(isSettlementPriceDecrypted, "Settlement price not yet decrypted");
+        _;
     }
 
     /**
-     * @notice Get the total number of bids
-     * @return The length of the bidAccounts array
+     * @notice Claim the final token amount after the auction ends.
+     * @dev Can be called only once per bidder.
      */
-    function getTotalBidAccounts() public view returns (uint256) {
-        return bidAccounts.length;
-    }
-
-    /**
-     * @notice Manually stop the auction
-     * @dev Can only be called by the owner and if the auction is stoppable
-     */
-    function stop() external onlyOwner {
-        require(stoppable);
-        manuallyStopped = true;
-    }
-
-    /**
-     * @notice Transfer the final bid amount to the bidder
-     * @dev Can only be called once after the auction ends
-     */
-    function claim() public onlyAfterEnd {
-        BidOutPut storage bidOutput = bidsOutput[msg.sender];
-        require(bidOutput.canClaim, "Bid already claimed or user cannot claim");
-        bidOutput.canClaim = false;
-        euint64 amount = TFHE.mul(bidOutput.eQuantity, settlementPrice);
+    function claim() public onlyAfterEnd onlyWhenSettlementPriceDecrypted {
+        BidOutput storage output = bidOutputs[msg.sender];
+        require(output.canClaim, "Bid already claimed or cannot claim");
+        output.canClaim = false;
+        euint64 amount = TFHE.mul(output.eQuantity, decryptedSettlementPrice);
         TFHE.allowTransient(amount, address(tokenContract));
         tokenContract.transfer(msg.sender, amount);
     }
 
     /**
-     * @notice Withdraw the difference between deposit and final amount
-     * @dev Must call `claim` before being allowed to withdraw
+     * @notice Withdraw the difference between the deposit and the final bid amount.
+     * @dev The bidder must first call `claim`.
      */
-    function withdraw() public onlyAfterEnd {
-        BidOutPut memory bidOutput = bidsOutput[msg.sender];
-        require(!bidOutput.canClaim, "Bid must be claimed before withdraw");
-
-        // TFHE.allow(settlementPrice, msg.sender);
-        // TFHE.allow(bidOutput.eQuantity, msg.sender);
-
-        euint64 amount = TFHE.mul(bidOutput.eQuantity, settlementPrice);
-        euint64 result = TFHE.sub(bidOutput.eDeposit, amount);
-        TFHE.allowTransient(amount, address(tokenContract));
+    function withdraw() public onlyAfterEnd onlyWhenSettlementPriceDecrypted {
+        BidOutput memory output = bidOutputs[msg.sender];
+        require(!output.canClaim, "Bid must be claimed before withdrawal");
+        euint64 amount = TFHE.mul(output.eQuantity, decryptedSettlementPrice);
+        euint64 result = TFHE.sub(output.eDeposit, amount);
+        TFHE.allowTransient(result, address(tokenContract));
         tokenContract.transfer(msg.sender, result);
     }
 
+    // --------------------------------------------------
+    // Internal Helper: Compare Bids
+    // --------------------------------------------------
+
     /**
-     * @notice Checks if a new bid is better than the existing one
-     * @dev Compares the new bid with the old bid
-     * @param oldBidAmount The amount (price*quantity) of the existing (old) bid
-     * @param newBidAmount The amount (price*quantity) of the new bid
-     * @return Returns `true` if the new bid is better (higher and not equal), otherwise `false`
+     * @notice Checks if a new bid is better than an existing bid.
+     * @param oldBidAmount Encrypted amount (price * quantity) of the existing bid.
+     * @param newBidAmount Encrypted amount of the new bid.
+     * @return An encrypted boolean that is true if the new bid is higher (and not equal), false otherwise.
      */
     function _isBetterBid(euint64 oldBidAmount, euint64 newBidAmount) internal returns (ebool) {
         ebool isHigherPrice = TFHE.gt(newBidAmount, oldBidAmount);
@@ -530,187 +356,277 @@ contract ConfidentialTokensAuction is SepoliaZamaFHEVMConfig, Ownable2Step, Sepo
         return TFHE.and(notEqual, isHigherPrice);
     }
 
-    // ------------------------------------------------------------------------
+    // --------------------------------------------------
     // Modifiers
-    // ------------------------------------------------------------------------
+    // --------------------------------------------------
 
+    /**
+     * @notice Allows function execution only before the auction ends.
+     */
     modifier onlyBeforeEnd() {
-        if (block.timestamp >= endTime || manuallyStopped == true) revert TooLate(endTime);
+        if (block.timestamp >= endTime) revert TooLate(endTime);
         _;
     }
 
+    /**
+     * @notice Allows function execution only after the auction ends.
+     */
     modifier onlyAfterEnd() {
-        if (block.timestamp < endTime && manuallyStopped == false) revert TooEarly(endTime);
+        if (block.timestamp < endTime) revert TooEarly(endTime);
         _;
     }
 
-    // function swap() public onlyOwner onlyAfterEnd {
-    //     require(swapCallCount < SortingNetworkLibrary.getNumberOfLayers(uint8(bidCounter)), "No more swap layers");
+    // --------------------------------------------------
+    // Swap and Sorting (for Bid Ranking)
+    // --------------------------------------------------
 
-    //     // Retrieve the pairs for the current layer from the sorting network
-    //     uint8[] memory pairs = SortingNetworkLibrary.getNetworkLayer(uint8(bidCounter), swapCallCount);
+    /**
+     * @notice Perform a swap layer for the sorting network to rank bids.
+     * @dev Calls the FHE library for encrypted comparisons and requests decryption in batches.
+     */
+    function swap() external onlyOwner onlyAfterEnd {
+        uint8 scCount = auctionState.swapCallCount;
 
-    //     // Example: if pairs = [0,1, 2,3, 1,2], that means we have 3 pairs:
-    //     //   (0,1), (2,3), (1,2)
-    //     // Make sure we don't exceed 8 pairs in a single batch:
-    //     require(pairs.length / 2 <= 8, "Too many pairs for one batch (max 8)");
+        // 1) Ensure that there is a sorting layer to process.
+        require(scCount < SortingNetworkLibrary.getNumberOfLayers(bidCounter), "No more swap layers");
 
-    //     // For each pair (i, j), compute the homomorphic comparison ePrice[i] > ePrice[j]
-    //     // and store it in `encryptedComparaisons`.
-    //     for (uint256 idx = 0; idx < pairs.length; idx += 2) {
-    //         uint8 i = pairs[idx];
-    //         uint8 j = pairs[idx + 1];
+        // 2) Retrieve the array of bid pairs for the current sorting layer.
+        uint8[] memory pairs = SortingNetworkLibrary.getNetworkLayer(bidCounter, scCount);
+        uint8 pairLength = uint8(pairs.length);
+        require(pairLength > 0 && (pairLength & 1) == 0, "Invalid pairs length");
 
-    //         // Retrieve the two bids (in memory)
-    //         BidData memory bidI = bids[bidsIndexs[i]];
-    //         BidData memory bidJ = bids[bidsIndexs[j]];
+        uint8 nPairs = pairLength >> 1; // Number of bid pairs (each pair consists of two indices)
+        require(nPairs <= 16, "Too many pairs for a single callback (max 16)");
 
-    //         // Homomorphic comparison
-    //         ebool isGreater = TFHE.gt(bidJ.ePrice, bidI.ePrice);
+        // 3) For each pair, perform an encrypted comparison and store the result.
+        for (uint8 idx = 0; idx < pairLength; idx += 2) {
+            uint8 i = pairs[idx];
+            uint8 j = pairs[idx + 1];
 
-    //         // Approve the usage of the resulting ebool
-    //         TFHE.allowThis(isGreater);
+            uint8 bidIndexI = sortedBidIndices[i];
+            uint8 bidIndexJ = sortedBidIndices[j];
 
-    //         // Build a unique key for storing the ebool
-    //         uint256 key = getComparisonKey(bidsIndexs[i], bidsIndexs[j]);
-    //         encryptedComparaisons[key] = isGreater;
-    //     }
+            // Encrypted comparison: is bid j's price greater than bid i's price?
+            ebool isGreater = TFHE.gt(bids[bidIndexJ].ePrice, bids[bidIndexI].ePrice);
+            TFHE.allowThis(isGreater);
+            encryptedComparisons[getComparisonKey(bidIndexI, bidIndexJ)] = isGreater;
+        }
 
-    //     // Now request a batch *decryption* of these pairs in one go.
-    //     // This will call back our callback function (e.g. `callbackBitmask` or `callback8`)
-    //     // to do the actual swap in clear if needed.
-    //     requestCompareNPairs(pairs);
+        // 4) Emit decryption requests in batches (maximum 8 pairs per batch).
+        uint8 offset = 0;
+        uint8 chunkSize = 8;
 
-    //     // Move to the next layer
-    //     swapCallCount++;
-    // }
+        while (offset < nPairs) {
+            uint8 batchSize = nPairs - offset;
+            if (batchSize > chunkSize) {
+                batchSize = chunkSize;
+            }
 
-    // function requestCompareNPairs(uint8[] memory pairs) internal {
-    //     // pairs = [i1, j1, i2, j2, ... iN, jN]
-    //     require(pairs.length % 2 == 0, "Must be an even number of indices");
-    //     uint256 nPairs = pairs.length / 2;
-    //     require(nPairs <= 16, "Max 16 comparisons in one call");
+            // Build an array of ciphertexts for the current batch.
+            uint256[] memory cts = new uint256[](batchSize);
+            for (uint8 k = 0; k < batchSize; k++) {
+                uint8 pairIndex = (offset + k) * 2; // starting index for the pair in the array
+                uint8 iIdx = pairs[pairIndex];
+                uint8 jIdx = pairs[pairIndex + 1];
 
-    //     // On prépare un tableau cts pour stocker les ciphertexts de chaque comparaison
-    //     uint256[] memory cts = new uint256[](8);
+                cts[k] = Gateway.toUint256(encryptedComparisons[getComparisonKey(sortedBidIndices[iIdx], sortedBidIndices[jIdx])]);
+            }
 
-    //     for (uint256 k = 0; k < nPairs; k++) {
-    //         uint8 iIdx = pairs[2 * k];
-    //         uint8 jIdx = pairs[2 * k + 1];
+            bytes4 callbackSelector = _getCallbackSelector(batchSize);
 
-    //         // On récupère la clé (ou l'ID) stockée on-chain qui pointe vers l'ebool comparé
-    //         // ex: getComparisonKey(bidsIndexs[iIdx], bidsIndexs[jIdx])
-    //         uint256 key = getComparisonKey(bidsIndexs[iIdx], bidsIndexs[jIdx]);
+            // Emit decryption request.
+            uint256 requestID = Gateway.requestDecryption(
+                cts,
+                callbackSelector,
+                0, // optional userData
+                block.timestamp + 100, // deadline
+                false
+            );
 
-    //         // On stocke le ciphertext associé
-    //         cts[k] = Gateway.toUint256(encryptedComparaisons[key]);
-    //     }
+            // 5) Store parameters (offset and batchSize) for the callback.
+            addParamsUint256(requestID, offset);
+            addParamsUint256(requestID, batchSize);
 
-    //     for (uint256 k = nPairs; k < 8; k++) {
-    //         // uint8 iIdx = pairs[2 * k];
-    //         // uint8 jIdx = pairs[2 * k + 1];
+            offset += batchSize;
+        }
 
-    //         // On stocke le ciphertext associé
-    //         cts[k] = Gateway.toUint256(TFHE.asEbool(false));
-    //     }
+        // 6) Increment the swap call count.
+        auctionState.swapCallCount = scCount + 1;
+    }
 
-    //     // Appel de déchiffrement (simultané pour nPairs ebool)
-    //     // Attention : ta passerelle doit pouvoir gérer "nPairs" booleans en callback.
-    //     uint256 requestID = Gateway.requestDecryption(
-    //         cts,
-    //         this.callback16.selector, // on suppose qu'on a la version "16 booléens"
-    //         0,
-    //         block.timestamp + 100,
-    //         false
-    //     );
+    /**
+     * @notice Generate a unique key for a bid comparison using keccak256.
+     * @param smallerID The smaller bid index.
+     * @param biggerID The bigger bid index.
+     * @return A uint256 hash key.
+     */
+    function getComparisonKey(uint8 smallerID, uint8 biggerID) public pure returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(smallerID, biggerID)));
+    }
 
-    //     // On packe les paires dans un seul uint256
-    //     uint256 packed = packPairs(pairs);
+    /**
+     * @notice Common callback logic for processing decrypted comparisons.
+     * @param requestID The ID of the decryption request.
+     * @param results An array of decrypted booleans.
+     */
+    function _commonCallbackLogic(uint256 requestID, bool[] memory results) internal {
+        // Retrieve stored parameters (offset and batchSize)
+        uint256[] memory stored = getParamsUint256(requestID);
+        require(stored.length == 2, "Missing params");
+        uint8 offset = uint8(stored[0]);
+        uint8 batchSize = uint8(stored[1]);
 
-    //     // => Stockage en un seul param
-    //     addParamsUint256(requestID, packed);
-    // }
+        // Determine the sorting layer (swapCallCount was incremented in swap(), so layer = swapCallCount - 1).
+        uint8 scCount = auctionState.swapCallCount - 1;
 
-    // function callback16(
-    //     uint256 requestID,
-    //     bool dec0,
-    //     bool dec1,
-    //     bool dec2,
-    //     bool dec3,
-    //     bool dec4,
-    //     bool dec5,
-    //     bool dec6,
-    //     bool dec7
-    // )
-    //     public
-    //     // bool dec8,
-    //     // bool dec9,
-    //     // bool dec10,
-    //     // bool dec11,
-    //     // bool dec12,
-    //     // bool dec13,
-    //     // bool dec14,
-    //     // bool dec15
-    //     onlyGateway
-    // {
-    //     console.log("Hello World");
-    //     // On récupère les paires [i1, j1, i2, j2, ... iN, jN] qu'on avait stockées
-    //     uint256[] memory pairs = getParamsUint256(requestID);
+        // Retrieve the bid pairs for the current layer.
+        uint8[] memory pairs = SortingNetworkLibrary.getNetworkLayer(bidCounter, scCount);
 
-    //     uint256 nPairs = pairs.length / 2;
+        // Process each decrypted comparison and swap bids if necessary.
+        for (uint8 k = 0; k < batchSize; k++) {
+            bool res = results[k];
+            uint8 pairIndex = (offset + k) * 2;
+            uint8 iIdx = pairs[pairIndex];
+            uint8 jIdx = pairs[pairIndex + 1];
 
-    //     // On place tous les bools de la signature dans un array local
-    //     // pour pouvoir itérer plus facilement
-    //     bool[8] memory results = [dec0, dec1, dec2, dec3, dec4, dec5, dec6, dec7];
+            uint256 compKey = getComparisonKey(sortedBidIndices[iIdx], sortedBidIndices[jIdx]);
+            decryptedComparisons[compKey] = res;
 
-    //     // Pour chaque comparaison, on stocke le résultat en clair, et
-    //     // on fait le swap si nécessaire
-    //     for (uint256 k = 0; k < nPairs; k++) {
-    //         bool res = results[k];
-    //         uint256 iIdx = pairs[2 * k];
-    //         uint256 jIdx = pairs[2 * k + 1];
+            // If the result is true, swap the bid indices.
+            if (res) {
+                uint8 temp = sortedBidIndices[jIdx];
+                sortedBidIndices[jIdx] = sortedBidIndices[iIdx];
+                sortedBidIndices[iIdx] = temp;
+            }
+        }
+    }
 
-    //         // On enregistre la valeur déchiffrée
-    //         decryptedComparaisons[getComparisonKey(iIdx, jIdx)] = res;
+    // --------------------------------------------------
+    // Gateway Callback Functions
+    // --------------------------------------------------
 
-    //         // Swap si nécessaire
-    //         if (res) {
-    //             uint256 temp = bidsIndexs[jIdx];
-    //             bidsIndexs[jIdx] = bidsIndexs[iIdx];
-    //             bidsIndexs[iIdx] = temp;
-    //         }
-    //     }
+    /// @notice Callback for a single decrypted comparison.
+    function callback1(uint256 requestID, bool dec0) external onlyGateway {
+        bool[] memory arr = new bool[](1);
+        arr[0] = dec0;
+        _commonCallbackLogic(requestID, arr);
+    }
 
-    //     // Fin !
-    // }
+    /// @notice Callback for two decrypted comparisons.
+    function callback2(uint256 requestID, bool dec0, bool dec1) external onlyGateway {
+        bool[] memory arr = new bool[](2);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        _commonCallbackLogic(requestID, arr);
+    }
 
-    // /// @dev packPairs([i1, j1, i2, j2, ..., iN, jN]) => uint256
-    // function packPairs(uint8[] memory pairs) internal pure returns (uint256 packed) {
-    //     // On veut stocker 2*N indices (puisque pairs.length doit être pair)
-    //     // i.e. pairs.length <= 32 => max 16 paires
-    //     require(pairs.length % 2 == 0, "pairs.length must be even");
-    //     require(pairs.length <= 32, "Cannot fit more than 16 pairs in 256 bits");
+    function callback3(uint256 requestID, bool dec0, bool dec1, bool dec2) external onlyGateway {
+        bool[] memory arr = new bool[](3);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        _commonCallbackLogic(requestID, arr);
+    }
 
-    //     // Au fur et à mesure, on déplace le 'packed' de 8 bits et on insère pairs[i]
-    //     // Ex: si pairs = [i1, j1, i2, j2], on aura dans packed (en binaire):
-    //     //   [i1, j1, i2, j2] (chaque élément = 1 octet)
-    //     for (uint256 i = 0; i < pairs.length; i++) {
-    //         packed = (packed << 8) | uint256(pairs[i]);
-    //     }
-    // }
+    function callback4(uint256 requestID, bool dec0, bool dec1, bool dec2, bool dec3) external onlyGateway {
+        bool[] memory arr = new bool[](4);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        arr[3] = dec3;
+        _commonCallbackLogic(requestID, arr);
+    }
 
-    // function unpackPairs(uint256 packed, uint256 nPairs) internal pure returns (uint8[] memory) {
-    //     // On va recréer un tableau [i1, j1, i2, j2, ..., iN, jN]
-    //     uint8[] memory pairs = new uint8[](2 * nPairs);
+    function callback5(uint256 requestID, bool dec0, bool dec1, bool dec2, bool dec3, bool dec4) external onlyGateway {
+        bool[] memory arr = new bool[](5);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        arr[3] = dec3;
+        arr[4] = dec4;
+        _commonCallbackLogic(requestID, arr);
+    }
 
-    //     // On relit depuis la droite (bits de poids faible) dans l'ordre inverse
-    //     // pour reconstituer le tableau dans le même ordre qu’au départ.
-    //     for (uint256 i = 0; i < 2 * nPairs; i++) {
-    //         // Extraire l’octet de droite
-    //         pairs[2 * nPairs - 1 - i] = uint8(packed & 0xFF);
-    //         // Décaler
-    //         packed >>= 8;
-    //     }
-    //     return pairs;
-    // }
+    function callback6(
+        uint256 requestID,
+        bool dec0,
+        bool dec1,
+        bool dec2,
+        bool dec3,
+        bool dec4,
+        bool dec5
+    ) external onlyGateway {
+        bool[] memory arr = new bool[](6);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        arr[3] = dec3;
+        arr[4] = dec4;
+        arr[5] = dec5;
+        _commonCallbackLogic(requestID, arr);
+    }
+
+    function callback7(
+        uint256 requestID,
+        bool dec0,
+        bool dec1,
+        bool dec2,
+        bool dec3,
+        bool dec4,
+        bool dec5,
+        bool dec6
+    ) external onlyGateway {
+        bool[] memory arr = new bool[](7);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        arr[3] = dec3;
+        arr[4] = dec4;
+        arr[5] = dec5;
+        arr[6] = dec6;
+        _commonCallbackLogic(requestID, arr);
+    }
+
+    function callback8(
+        uint256 requestID,
+        bool dec0,
+        bool dec1,
+        bool dec2,
+        bool dec3,
+        bool dec4,
+        bool dec5,
+        bool dec6,
+        bool dec7
+    ) external onlyGateway {
+        bool[] memory arr = new bool[](8);
+        arr[0] = dec0;
+        arr[1] = dec1;
+        arr[2] = dec2;
+        arr[3] = dec3;
+        arr[4] = dec4;
+        arr[5] = dec5;
+        arr[6] = dec6;
+        arr[7] = dec7;
+        _commonCallbackLogic(requestID, arr);
+    }
+
+    /**
+     * @notice Returns the appropriate callback selector based on the number of pairs.
+     * @param nPairs Number of bid pairs in the current batch.
+     * @return The callback function selector.
+     */
+    function _getCallbackSelector(uint8 nPairs) internal pure returns (bytes4) {
+        bytes4[8] memory selectors = [
+            this.callback1.selector,
+            this.callback2.selector,
+            this.callback3.selector,
+            this.callback4.selector,
+            this.callback5.selector,
+            this.callback6.selector,
+            this.callback7.selector,
+            this.callback8.selector
+        ];
+        require(nPairs > 0 && nPairs <= 8, "Unsupported nPairs");
+        return selectors[nPairs - 1];
+    }
 }

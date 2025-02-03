@@ -11,8 +11,7 @@ export async function deployConfidentialTokensAuctionFixture(
   tokenContractAddress: AddressLike,
   sortingLibraryAddress: AddressLike,
   totalTokens:BigNumberish,
-  biddingTime: BigNumberish,
-  isStoppable: boolean
+  biddingTime: BigNumberish
 ): Promise<ConfidentialTokensAuction> {
 
   
@@ -35,8 +34,7 @@ export async function deployConfidentialTokensAuctionFixture(
   const contract = await contractFactory.deploy(
     tokenContractAddress,
     totalTokens,
-    biddingTime,
-    isStoppable
+    biddingTime
   );
 
 

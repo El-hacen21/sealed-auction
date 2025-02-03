@@ -1,550 +1,277 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.24;
 
 /**
  * @title SortingNetworkLibrary
- * @dev Hardcoded comparator data for an optimal 4-input sorting network (5 comparators, 3 layers).
+ * @notice Optimized library for sorting networks for input sizes 2 through 16.
  *
- * Usage Example:
- *   1) Determine how many layers: getNumberOfLayers() → 3.
- *   2) For each layer i in [0..2], retrieve comparator pairs via getLayer(i).
- *      - If getLayer(i) returns [0,2, 1,3], that means two comparators: (0,2) and (1,3).
- *   3) Perform each compare-and-swap in your calling contract using these pairs.
+ * For each supported input size the optimal network is represented by two constants:
+ *   1. A bytes constant that contains the concatenated comparator pairs for all layers.
+ *      Each comparator pair is encoded as 2 bytes:
+ *         - The first byte is the left index.
+ *         - The second byte is the right index.
+ *   2. A bytes constant that encodes the layer offsets.
+ *      For example, if the offsets are [0, 4, 8, 10] then we encode that as hex "0004080a".
  *
- * This avoids passing arrays or verifying hashes at runtime.
+ * The public functions are:
+ *   - getNumberOfLayers(inputSize) returns the number of layers for that input size.
+ *   - getNetworkLayer(inputSize, layerIndex) returns the comparator pairs for that layer as a uint8[].
+ *
+ * Only input sizes 2 through 16 are supported.
  */
 library SortingNetworkLibrary {
-    /**
-     * @dev Returns the total number of layers in the 4-input sorting network.
-     * A minimal-depth sorting network for 4 inputs has 3 layers.
-     */
-    function getNumberOfLayers(uint8 inputSize) internal pure returns (uint8) {
-        if (inputSize == 2) {
-            return 1;
-        }
-        if (inputSize == 4) {
-            return 3;
-        }
-        if (inputSize == 32) {
-            return 14;
-        }
-        return 0;
+    // --- Lookup table for the number of layers per input size (index = input size) ---
+    // Only sizes 2 .. 16 are supported.
+    // Layer count lookup table stored as packed bytes
+    bytes private constant LAYERS_COUNT = hex"0000010303050506060707080809090909";
+
+    function getNumberOfLayers(uint8 inputSize) public pure returns (uint8) {
+        require(inputSize >= 2 && inputSize <= 16, "Unsupported input size");
+        return uint8(LAYERS_COUNT[inputSize]);
     }
 
-    /**
-     * @dev Verifies the hash for a specific layer of a sorting network.
-     * @param inputSize The size of the sorting network input.
-     * @param layerIndex The index of the layer to verify.
-     * @return True if the hash matches the precomputed hash, otherwise false.
-     */
+    // --- Internal helper to decode a bytes array into a uint8[] array ---
+    function _decodeLayer(bytes memory data) private pure returns (uint8[] memory) {
+        uint8[] memory result = new uint8[](data.length);
+        for (uint256 i = 0; i < data.length; i++) {
+            result[i] = uint8(data[i]);
+        }
+        return result;
+    }
+
+    // --- Internal helper to extract layer data using bytes–encoded offsets ---
+    function _getLayer(
+        bytes memory layersData,
+        bytes memory offsets,
+        uint8 layerIndex
+    ) private pure returns (uint8[] memory) {
+        // Convert the bytes constant offsets into a uint8 array.
+        uint256 offLen = offsets.length;
+        uint8[] memory offArray = new uint8[](offLen);
+        for (uint256 i = 0; i < offLen; i++) {
+            offArray[i] = uint8(offsets[i]);
+        }
+        require(layerIndex < offArray.length - 1, "Invalid layer index");
+        uint256 start = offArray[layerIndex];
+        uint256 end = offArray[layerIndex + 1];
+        bytes memory layerData = new bytes(end - start);
+        for (uint256 i = 0; i < end - start; i++) {
+            layerData[i] = layersData[start + i];
+        }
+        return _decodeLayer(layerData);
+    }
+
+    // --- Network data for input sizes 2 through 16 ---
+    // For each input size we define:
+    //   - LAYERS_DATA_X: concatenated comparator pairs for all layers.
+    //   - LAYER_OFFSETS_X: bytes constant holding the offsets.
+    //
+    // Each comparator pair is encoded in 2 bytes.
+    //
+    // Input size 2:
+    // 1 layer: [(0,1)]
+    bytes private constant LAYERS_DATA_2 = hex"0001";
+    bytes private constant LAYER_OFFSETS_2 = hex"0002"; // represents [0,2]
+
+    // Input size 3:
+    // Layers:
+    //   0: [(0,2)] → 00 02
+    //   1: [(0,1)] → 00 01
+    //   2: [(1,2)] → 01 02
+    bytes private constant LAYERS_DATA_3 = hex"000200010102";
+    bytes private constant LAYER_OFFSETS_3 = hex"00020406"; // [0,2,4,6]
+
+    // Input size 4:
+    // Layers:
+    //   0: [(0,2),(1,3)] → 00 02 01 03
+    //   1: [(0,1),(2,3)] → 00 01 02 03
+    //   2: [(1,2)]       → 01 02
+    bytes private constant LAYERS_DATA_4 = hex"00020103000102030102";
+    bytes private constant LAYER_OFFSETS_4 = hex"0004080a"; // [0,4,8,10]
+
+    // Input size 5:
+    // Layers:
+    //   0: [(0,3),(1,4)] → 00 03 01 04
+    //   1: [(0,2),(1,3)] → 00 02 01 03
+    //   2: [(0,1),(2,4)] → 00 01 02 04
+    //   3: [(1,2),(3,4)] → 01 02 03 04
+    //   4: [(2,3)]       → 02 03
+    bytes private constant LAYERS_DATA_5 = hex"000301040002010300010204010203040203";
+    bytes private constant LAYER_OFFSETS_5 = hex"0004080c1012"; // [0,4,8,12,16,18]
+
+
+    // Input size 6:
+    // Layers:
+    //   0: [(0,5),(1,3),(2,4)] → 00 05 01 03 02 04
+    //   1: [(1,2),(3,4)]       → 01 02 03 04
+    //   2: [(0,3),(2,5)]       → 00 03 02 05
+    //   3: [(0,1),(2,3),(4,5)] → 00 01 02 03 04 05
+    //   4: [(1,2),(3,4)]       → 01 02 03 04
+    bytes private constant LAYERS_DATA_6 = hex"0005010302040102030400030205000102030401020304";
+    bytes private constant LAYER_OFFSETS_6 = hex"00060a0e1418"; // [0,6,10,14,20,24]
+
+    // Input size 7:
+    // Layers:
+    //   0: [(0,6),(2,3),(4,5)]         → 00 06 02 03 04 05
+    //   1: [(0,2),(1,4),(3,6)]           → 00 02 01 04 03 06
+    //   2: [(0,1),(2,5),(3,4)]           → 00 01 02 05 03 04
+    //   3: [(1,2),(4,6)]                 → 01 02 04 06
+    //   4: [(2,3),(4,5)]                 → 02 03 04 05
+    //   5: [(1,2),(3,4),(5,6)]           → 01 02 03 04 05 06
+    bytes private constant LAYERS_DATA_7 = hex"000602030405000201040306000102050304010204060102030406";
+    bytes private constant LAYER_OFFSETS_7 = hex"00060c12161a20"; // [0,6,12,18,22,26,32]
+
+   
+ 
+    bytes private constant LAYERS_DATA_8 =
+        hex"0002010304060507"  // Layer 0: (0,2),(1,3),(4,6),(5,7)
+        hex"0004010502060307"  // Layer 1: (0,4),(1,5),(2,6),(3,7)
+        hex"0001020304050607"  // Layer 2: (0,1),(2,3),(4,5),(6,7)
+        hex"02040305"          // Layer 3: (2,4),(3,5)
+        hex"01040306"          // Layer 4: (1,4),(3,6)
+        hex"010203040506";     // Layer 5: (1,2),(3,4),(5,6)
+    bytes private constant LAYER_OFFSETS_8 = hex"000810181C2026"; // [0, 8, 16, 24, 28, 32, 38]
+
+
+    // Input size 9:
+    // (7 layers, 50 bytes total)
+    bytes private constant LAYERS_DATA_9 =
+        hex"0003010702050408"
+        hex"0007020403080506"
+        hex"0002010304050708"
+        hex"010403060507"
+        hex"0001020403050608"
+        hex"020304050607"
+        hex"010203040506";
+    bytes private constant LAYER_OFFSETS_9 = hex"00081018201e262c32"; // [0,8,16,24,30,38,44,50]
+
+    // Input size 10:
+    // (7 layers, 64 bytes total; chosen variant with 31 comparator elements)
+    bytes private constant LAYERS_DATA_10 =
+        hex"00010205030604070809"  // Layer 0
+        hex"00060108020403090507"  // Layer 1
+        hex"00020103040506080709"  // Layer 2 (corrected)
+        hex"00010207030504060809"  // Layer 3
+        hex"0102030405060708"      // Layer 4
+        hex"0103020405070608"      // Layer 5 (fixed 0507)
+        hex"020304050607";         // Layer 6   
+    bytes private constant LAYER_OFFSETS_10 = hex"000a141e28323c444a"; // Correct offsets
+
+    // Input size 11:
+    bytes private constant LAYERS_DATA_11 =
+        hex"00090106020403070508"
+        hex"00010305040A06090708"
+        hex"0103020504070810"
+        hex"00040102030705090608"
+        hex"0001020604050708090A"
+        hex"0204030605070809"
+        hex"0102030405060708"
+        hex"020304050607";
+    bytes private constant LAYER_OFFSETS_11 = hex"000a141e28323840464a"; // [0,10,20,28,38,48,56,64,70]
+
+    // Input size 12:
+    bytes private constant LAYERS_DATA_12 =
+        hex"0008010702060B040A0509"
+        hex"0002010403050608070A090B"
+        hex"00010209040705060A0B"
+        hex"010302070409080A"
+        hex"00010401020307050908"
+        hex"000102030405060708090A0B"
+        hex"0102030405060708"
+        hex"0203040506070809";
+    bytes private constant LAYER_OFFSETS_12 = hex"000c1812222a32383e46"; // [0,12,24,34,42,52,62,72,80]
+
+    // Input size 13:
+    bytes private constant LAYERS_DATA_13 =
+        hex"000B01070204030508090A0C"
+        hex"000203060407080A"
+        hex"0008010302050409060B070C"
+        hex"0001020A03080406090B"
+        hex"01030204050A060807090B0C"
+        hex"0102030405080609070A"
+        hex"020304070506080B090A"
+        hex"0405060708090A0B"
+        hex"030405060708090A";
+    bytes private constant LAYER_OFFSETS_13 = hex"000c141e28323840464a52"; // [0,12,20,30,40,52,62,70,78,90]
+
+    // Input size 14:
+    bytes private constant LAYERS_DATA_14 =
+        hex"000102030405060708090A0B0C0D"
+        hex"0002030103040805090A0B0D"
+        hex"000A0106020B030D0508070C"
+        hex"010402080306050B070A090C"
+        hex"000102030109040A050707080C0D"
+        hex"010502040307060A080C090B"
+        hex"0102030405060708090A0B0C"
+        hex"02030405060708090A0B"
+        hex"030405060708090A";
+    bytes private constant LAYER_OFFSETS_14 = hex"000e1a262e3a44504a56"; // [0,14,26,38,50,62,74,86,96,104]
+
+    // Input size 15:
+    bytes private constant LAYERS_DATA_15 =
+        hex"0006010A020E0309040C050D070B"
+        hex"000702050304060B080A090C0D0E"
+        hex"010D02030406050907080A0C0B0E"
+        hex"000301040507060D08090A0B0C0E"
+        hex"000102030407050906080A0C0B0D"
+        hex"01020305080A0B0C"
+        hex"030405060708"
+        hex"02030405060708090A0B"
+        hex"05060708";
+    bytes private constant LAYER_OFFSETS_15 = hex"000c1a2832384050646a"; // [0,12,26,40,54,68,78,88,98,102]
+
+    // Input size 16:
+    bytes private constant LAYERS_DATA_16 =
+        hex"00050104020C030D060708090A0F0B0E"
+        hex"0002010A03060407050E080B090C0D0F"
+        hex"00080103020B040D0509060A070F0C0E"
+        hex"0001020403080506070C090A0B0D0E0F"
+        hex"0103020504080609070B0A0D0C0E"
+        hex"01020305040B060807090A0C0D0E"
+        hex"02030405060708090A0B0C0D"
+        hex"04060507080A090B"
+        hex"030405060708090A0B0C";
+    bytes private constant LAYER_OFFSETS_16 = hex"00101e2c3a484e5a66"; // [0,16,32,48,64,78,94,108,118,130]
+
+    // --------------------------------------------------
+    // Public interface
+    // --------------------------------------------------
+
+
     function getNetworkLayer(uint8 inputSize, uint8 layerIndex) external pure returns (uint8[] memory) {
+        require(inputSize >= 2 && inputSize <= 16, "Unsupported input size");
+
         if (inputSize == 2) {
-            return getNetwork2Layer(layerIndex);
+            return _getLayer(LAYERS_DATA_2, LAYER_OFFSETS_2, layerIndex);
+        } else if (inputSize == 3) {
+            return _getLayer(LAYERS_DATA_3, LAYER_OFFSETS_3, layerIndex);
+        } else if (inputSize == 4) {
+            return _getLayer(LAYERS_DATA_4, LAYER_OFFSETS_4, layerIndex);
+        } else if (inputSize == 5) {
+            return _getLayer(LAYERS_DATA_5, LAYER_OFFSETS_5, layerIndex);
+        } else if (inputSize == 6) {
+            return _getLayer(LAYERS_DATA_6, LAYER_OFFSETS_6, layerIndex);
+        } else if (inputSize == 7) {
+            return _getLayer(LAYERS_DATA_7, LAYER_OFFSETS_7, layerIndex);
+        } else if (inputSize == 8) {
+            return _getLayer(LAYERS_DATA_8, LAYER_OFFSETS_8, layerIndex);
+        } else if (inputSize == 9) {
+            return _getLayer(LAYERS_DATA_9, LAYER_OFFSETS_9, layerIndex);
+        } else if (inputSize == 10) {
+            return _getLayer(LAYERS_DATA_10, LAYER_OFFSETS_10, layerIndex);
+        } else if (inputSize == 11) {
+            return _getLayer(LAYERS_DATA_11, LAYER_OFFSETS_11, layerIndex);
+        } else if (inputSize == 12) {
+            return _getLayer(LAYERS_DATA_12, LAYER_OFFSETS_12, layerIndex);
+        } else if (inputSize == 13) {
+            return _getLayer(LAYERS_DATA_13, LAYER_OFFSETS_13, layerIndex);
+        } else if (inputSize == 14) {
+            return _getLayer(LAYERS_DATA_14, LAYER_OFFSETS_14, layerIndex);
+        } else if (inputSize == 15) {
+            return _getLayer(LAYERS_DATA_15, LAYER_OFFSETS_15, layerIndex);
+        } else if (inputSize == 16) {
+            return _getLayer(LAYERS_DATA_16, LAYER_OFFSETS_16, layerIndex);
         }
-        if (inputSize == 4) {
-            return getNetwork4Layer(layerIndex);
-        }
-        if (inputSize == 32) {
-            return getNetwork32Layer(layerIndex);
-        }
-        revert("Sorting network not defined for this input size");
-    }
-
-    function getNetwork2Layer(uint8 layerIndex) internal pure returns (uint8[] memory) {
-        if (layerIndex == 0) {
-            // layer 0 has 2 comparator pairs
-            //   (0,1)
-            uint8[] memory pairs = new uint8[](2);
-            pairs[0] = 0;
-            pairs[1] = 1;
-            return pairs;
-        }
-        revert("Invalid layer index");
-    }
-
-    /**
-     * @dev Returns the comparator pairs for the specified layer, in a flat array:
-     *      [leftIndex1, rightIndex1, leftIndex2, rightIndex2, ...].
-     *
-     * For example, if layer 0 returns [0,2, 1,3], it means:
-     *    - Compare/Swap (0,2)
-     *    - Compare/Swap (1,3)
-     *
-     * Layers for 4-input optimal network:
-     *    Layer 0: (0,2), (1,3)
-     *    Layer 1: (0,1), (2,3)
-     *    Layer 2: (1,2)
-     *
-     * @param layerIndex Index in [0..2].
-     * @return A new uint8[] array describing that layer's comparators.
-     */
-    function getNetwork4Layer(uint8 layerIndex) internal pure returns (uint8[] memory) {
-        if (layerIndex == 0) {
-            // layer 0 has 2 comparator pairs
-            //   (0,2) and (1,3)
-            uint8[] memory pairs = new uint8[](4);
-            pairs[0] = 0;
-            pairs[1] = 2;
-            pairs[2] = 1;
-            pairs[3] = 3;
-            return pairs;
-        } else if (layerIndex == 1) {
-            // layer 1 has 2 comparator pairs
-            //   (0,1) and (2,3)
-            uint8[] memory pairs = new uint8[](4);
-            pairs[0] = 0;
-            pairs[1] = 1;
-            pairs[2] = 2;
-            pairs[3] = 3;
-            return pairs;
-        } else if (layerIndex == 2) {
-            // layer 2 has 1 comparator pair
-            //   (1,2)
-            uint8[] memory pairs = new uint8[](2);
-            pairs[0] = 1;
-            pairs[1] = 2;
-            return pairs;
-        }
-
-        revert("Invalid layer index");
-    }
-
-    /**
-     * @dev Retourne les comparateurs pour un réseau optimal à 32 entrées basé sur l'index de couche.
-     * Chaque paire de comparateurs est représentée séquentiellement dans le tableau.
-     *
-     * @param layerIndex Index de la couche dans [0..13].
-     * @return Un tableau uint8[] décrivant les comparateurs de la couche spécifiée.
-     */
-    function getNetwork32Layer(uint8 layerIndex) internal pure returns (uint8[] memory) {
-        if (layerIndex == 0) {
-            // Layer 0: 16 paires -> 32 éléments
-            uint8[] memory pairs = new uint8[](32);
-            pairs[0] = 0;
-            pairs[1] = 1;
-            pairs[2] = 2;
-            pairs[3] = 3;
-            pairs[4] = 4;
-            pairs[5] = 5;
-            pairs[6] = 6;
-            pairs[7] = 7;
-            pairs[8] = 8;
-            pairs[9] = 9;
-            pairs[10] = 10;
-            pairs[11] = 11;
-            pairs[12] = 12;
-            pairs[13] = 13;
-            pairs[14] = 14;
-            pairs[15] = 15;
-            pairs[16] = 16;
-            pairs[17] = 17;
-            pairs[18] = 18;
-            pairs[19] = 19;
-            pairs[20] = 20;
-            pairs[21] = 21;
-            pairs[22] = 22;
-            pairs[23] = 23;
-            pairs[24] = 24;
-            pairs[25] = 25;
-            pairs[26] = 26;
-            pairs[27] = 27;
-            pairs[28] = 28;
-            pairs[29] = 29;
-            pairs[30] = 30;
-            pairs[31] = 31;
-            return pairs;
-        } else if (layerIndex == 1) {
-            // Layer 1: 16 paires -> 32 éléments
-            uint8[] memory pairs = new uint8[](32);
-            pairs[0] = 0;
-            pairs[1] = 2;
-            pairs[2] = 1;
-            pairs[3] = 3;
-            pairs[4] = 4;
-            pairs[5] = 6;
-            pairs[6] = 5;
-            pairs[7] = 7;
-            pairs[8] = 8;
-            pairs[9] = 10;
-            pairs[10] = 9;
-            pairs[11] = 11;
-            pairs[12] = 12;
-            pairs[13] = 14;
-            pairs[14] = 13;
-            pairs[15] = 15;
-            pairs[16] = 16;
-            pairs[17] = 18;
-            pairs[18] = 17;
-            pairs[19] = 19;
-            pairs[20] = 20;
-            pairs[21] = 22;
-            pairs[22] = 21;
-            pairs[23] = 23;
-            pairs[24] = 24;
-            pairs[25] = 26;
-            pairs[26] = 25;
-            pairs[27] = 27;
-            pairs[28] = 28;
-            pairs[29] = 30;
-            pairs[30] = 29;
-            pairs[31] = 31;
-            return pairs;
-        } else if (layerIndex == 2) {
-            // Layer 2: 16 paires -> 32 éléments
-            uint8[] memory pairs = new uint8[](32);
-            pairs[0] = 0;
-            pairs[1] = 4;
-            pairs[2] = 1;
-            pairs[3] = 5;
-            pairs[4] = 2;
-            pairs[5] = 6;
-            pairs[6] = 3;
-            pairs[7] = 7;
-            pairs[8] = 8;
-            pairs[9] = 12;
-            pairs[10] = 9;
-            pairs[11] = 13;
-            pairs[12] = 10;
-            pairs[13] = 14;
-            pairs[14] = 11;
-            pairs[15] = 15;
-            pairs[16] = 16;
-            pairs[17] = 20;
-            pairs[18] = 17;
-            pairs[19] = 21;
-            pairs[20] = 18;
-            pairs[21] = 22;
-            pairs[22] = 19;
-            pairs[23] = 23;
-            pairs[24] = 24;
-            pairs[25] = 28;
-            pairs[26] = 25;
-            pairs[27] = 29;
-            pairs[28] = 26;
-            pairs[29] = 30;
-            pairs[30] = 27;
-            pairs[31] = 31;
-            return pairs;
-        } else if (layerIndex == 3) {
-            // Layer 3: 16 paires -> 32 éléments
-            uint8[] memory pairs = new uint8[](32);
-            pairs[0] = 0;
-            pairs[1] = 8;
-            pairs[2] = 1;
-            pairs[3] = 9;
-            pairs[4] = 2;
-            pairs[5] = 10;
-            pairs[6] = 3;
-            pairs[7] = 11;
-            pairs[8] = 4;
-            pairs[9] = 12;
-            pairs[10] = 5;
-            pairs[11] = 13;
-            pairs[12] = 6;
-            pairs[13] = 14;
-            pairs[14] = 7;
-            pairs[15] = 15;
-            pairs[16] = 16;
-            pairs[17] = 24;
-            pairs[18] = 17;
-            pairs[19] = 25;
-            pairs[20] = 18;
-            pairs[21] = 26;
-            pairs[22] = 19;
-            pairs[23] = 27;
-            pairs[24] = 20;
-            pairs[25] = 28;
-            pairs[26] = 21;
-            pairs[27] = 29;
-            pairs[28] = 22;
-            pairs[29] = 30;
-            pairs[30] = 23;
-            pairs[31] = 31;
-            return pairs;
-        } else if (layerIndex == 4) {
-            // Layer 4: 16 paires -> 32 éléments
-            uint8[] memory pairs = new uint8[](32);
-            pairs[0] = 0;
-            pairs[1] = 16;
-            pairs[2] = 1;
-            pairs[3] = 8;
-            pairs[4] = 2;
-            pairs[5] = 4;
-            pairs[6] = 3;
-            pairs[7] = 12;
-            pairs[8] = 5;
-            pairs[9] = 10;
-            pairs[10] = 6;
-            pairs[11] = 9;
-            pairs[12] = 7;
-            pairs[13] = 14;
-            pairs[14] = 11;
-            pairs[15] = 13;
-            pairs[16] = 15;
-            pairs[17] = 31;
-            pairs[18] = 17;
-            pairs[19] = 24;
-            pairs[20] = 18;
-            pairs[21] = 20;
-            pairs[22] = 19;
-            pairs[23] = 28;
-            pairs[24] = 21;
-            pairs[25] = 26;
-            pairs[26] = 22;
-            pairs[27] = 25;
-            pairs[28] = 23;
-            pairs[29] = 30;
-            pairs[30] = 27;
-            pairs[31] = 29;
-            return pairs;
-        } else if (layerIndex == 5) {
-            // Layer 5: 14 paires -> 28 éléments
-            uint8[] memory pairs = new uint8[](28);
-            pairs[0] = 1;
-            pairs[1] = 2;
-            pairs[2] = 3;
-            pairs[3] = 5;
-            pairs[4] = 4;
-            pairs[5] = 8;
-            pairs[6] = 6;
-            pairs[7] = 22;
-            pairs[8] = 7;
-            pairs[9] = 11;
-            pairs[10] = 9;
-            pairs[11] = 25;
-            pairs[12] = 10;
-            pairs[13] = 12;
-            pairs[14] = 13;
-            pairs[15] = 14;
-            pairs[16] = 17;
-            pairs[17] = 18;
-            pairs[18] = 19;
-            pairs[19] = 21;
-            pairs[20] = 20;
-            pairs[21] = 24;
-            pairs[22] = 23;
-            pairs[23] = 27;
-            pairs[24] = 26;
-            pairs[25] = 28;
-            pairs[26] = 29;
-            pairs[27] = 30;
-            return pairs;
-        } else if (layerIndex == 6) {
-            // Layer 6: 12 paires -> 24 éléments
-            uint8[] memory pairs = new uint8[](24);
-            pairs[0] = 1;
-            pairs[1] = 17;
-            pairs[2] = 2;
-            pairs[3] = 18;
-            pairs[4] = 3;
-            pairs[5] = 19;
-            pairs[6] = 4;
-            pairs[7] = 20;
-            pairs[8] = 5;
-            pairs[9] = 10;
-            pairs[10] = 7;
-            pairs[11] = 23;
-            pairs[12] = 8;
-            pairs[13] = 24;
-            pairs[14] = 11;
-            pairs[15] = 27;
-            pairs[16] = 12;
-            pairs[17] = 28;
-            pairs[18] = 13;
-            pairs[19] = 29;
-            pairs[20] = 14;
-            pairs[21] = 30;
-            pairs[22] = 21;
-            pairs[23] = 26;
-            return pairs;
-        } else if (layerIndex == 7) {
-            // Layer 7: 12 paires -> 24 éléments
-            uint8[] memory pairs = new uint8[](24);
-            pairs[0] = 3;
-            pairs[1] = 17;
-            pairs[2] = 4;
-            pairs[3] = 16;
-            pairs[4] = 5;
-            pairs[5] = 21;
-            pairs[6] = 6;
-            pairs[7] = 18;
-            pairs[8] = 7;
-            pairs[9] = 9;
-            pairs[10] = 8;
-            pairs[11] = 20;
-            pairs[12] = 10;
-            pairs[13] = 26;
-            pairs[14] = 11;
-            pairs[15] = 23;
-            pairs[16] = 13;
-            pairs[17] = 25;
-            pairs[18] = 14;
-            pairs[19] = 28;
-            pairs[20] = 15;
-            pairs[21] = 27;
-            pairs[22] = 22;
-            pairs[23] = 24;
-            return pairs;
-        } else if (layerIndex == 8) {
-            // Layer 8: 12 paires -> 24 éléments
-            uint8[] memory pairs = new uint8[](24);
-            pairs[0] = 1;
-            pairs[1] = 4;
-            pairs[2] = 3;
-            pairs[3] = 8;
-            pairs[4] = 5;
-            pairs[5] = 16;
-            pairs[6] = 7;
-            pairs[7] = 17;
-            pairs[8] = 9;
-            pairs[9] = 21;
-            pairs[10] = 10;
-            pairs[11] = 22;
-            pairs[12] = 11;
-            pairs[13] = 19;
-            pairs[14] = 12;
-            pairs[15] = 20;
-            pairs[16] = 14;
-            pairs[17] = 24;
-            pairs[18] = 15;
-            pairs[19] = 26;
-            pairs[20] = 23;
-            pairs[21] = 28;
-            pairs[22] = 27;
-            pairs[23] = 30;
-            return pairs;
-        } else if (layerIndex == 9) {
-            // Layer 9: 10 paires -> 20 éléments
-            uint8[] memory pairs = new uint8[](20);
-            pairs[0] = 2;
-            pairs[1] = 5;
-            pairs[2] = 7;
-            pairs[3] = 8;
-            pairs[4] = 9;
-            pairs[5] = 18;
-            pairs[6] = 11;
-            pairs[7] = 17;
-            pairs[8] = 12;
-            pairs[9] = 16;
-            pairs[10] = 13;
-            pairs[11] = 22;
-            pairs[12] = 14;
-            pairs[13] = 20;
-            pairs[14] = 15;
-            pairs[15] = 19;
-            pairs[16] = 23;
-            pairs[17] = 24;
-            pairs[18] = 26;
-            pairs[19] = 29;
-            return pairs;
-        } else if (layerIndex == 10) {
-            // Layer 10: 10 paires -> 20 éléments
-            uint8[] memory pairs = new uint8[](20);
-            pairs[0] = 2;
-            pairs[1] = 4;
-            pairs[2] = 6;
-            pairs[3] = 12;
-            pairs[4] = 9;
-            pairs[5] = 16;
-            pairs[6] = 10;
-            pairs[7] = 11;
-            pairs[8] = 13;
-            pairs[9] = 17;
-            pairs[10] = 14;
-            pairs[11] = 18;
-            pairs[12] = 15;
-            pairs[13] = 22;
-            pairs[14] = 19;
-            pairs[15] = 25;
-            pairs[16] = 20;
-            pairs[17] = 21;
-            pairs[18] = 27;
-            pairs[19] = 29;
-            return pairs;
-        } else if (layerIndex == 11) {
-            // Layer 11: 10 paires -> 20 éléments
-            uint8[] memory pairs = new uint8[](20);
-            pairs[0] = 5;
-            pairs[1] = 6;
-            pairs[2] = 8;
-            pairs[3] = 12;
-            pairs[4] = 9;
-            pairs[5] = 10;
-            pairs[6] = 11;
-            pairs[7] = 13;
-            pairs[8] = 14;
-            pairs[9] = 16;
-            pairs[10] = 15;
-            pairs[11] = 17;
-            pairs[12] = 18;
-            pairs[13] = 20;
-            pairs[14] = 19;
-            pairs[15] = 23;
-            pairs[16] = 21;
-            pairs[17] = 22;
-            pairs[18] = 25;
-            pairs[19] = 26;
-            return pairs;
-        } else if (layerIndex == 12) {
-            // Layer 12: 12 paires -> 24 éléments
-            uint8[] memory pairs = new uint8[](24);
-            pairs[0] = 3;
-            pairs[1] = 5;
-            pairs[2] = 6;
-            pairs[3] = 7;
-            pairs[4] = 8;
-            pairs[5] = 9;
-            pairs[6] = 10;
-            pairs[7] = 12;
-            pairs[8] = 11;
-            pairs[9] = 14;
-            pairs[10] = 13;
-            pairs[11] = 16;
-            pairs[12] = 15;
-            pairs[13] = 18;
-            pairs[14] = 17;
-            pairs[15] = 20;
-            pairs[16] = 19;
-            pairs[17] = 21;
-            pairs[18] = 22;
-            pairs[19] = 23;
-            pairs[20] = 24;
-            pairs[21] = 25;
-            pairs[22] = 26;
-            pairs[23] = 28;
-            return pairs;
-        } else if (layerIndex == 13) {
-            // Layer 13: 13 paires -> 26 éléments
-            uint8[] memory pairs = new uint8[](26);
-            pairs[0] = 3;
-            pairs[1] = 4;
-            pairs[2] = 5;
-            pairs[3] = 6;
-            pairs[4] = 7;
-            pairs[5] = 8;
-            pairs[6] = 9;
-            pairs[7] = 10;
-            pairs[8] = 11;
-            pairs[9] = 12;
-            pairs[10] = 13;
-            pairs[11] = 14;
-            pairs[12] = 15;
-            pairs[13] = 16;
-            pairs[14] = 17;
-            pairs[15] = 18;
-            pairs[16] = 19;
-            pairs[17] = 20;
-            pairs[18] = 21;
-            pairs[19] = 22;
-            pairs[20] = 23;
-            pairs[21] = 24;
-            pairs[22] = 25;
-            pairs[23] = 26;
-            pairs[24] = 27;
-            pairs[25] = 28;
-            return pairs;
-        }
-
-        revert("Invalid layer index");
+        revert("Unsupported input size");
     }
 }

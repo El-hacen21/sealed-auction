@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import { reencryptEuint64, reencryptEbool } from "../reencrypt";
 import { debug } from "../utils";
 import { getFHEGasFromTxReceipt } from "../coprocessorUtils";
+import { awaitAllDecryptionResults } from "../asyncDecrypt";
 
 /**
  * Increases the EVM time by `seconds` and mines a new block.
@@ -41,11 +42,10 @@ export async function placeBid(fhevm, auctionContract, auctionAddress, bidderSig
     bidInput.add64(quantity);
 
     const encryptedBid = await bidInput.encrypt();
-    return auctionContract.connect(bidderSigner).bid(
+    return auctionContract.connect(bidderSigner).placeBid(
         encryptedBid.handles[0],
         encryptedBid.handles[1],
-        encryptedBid.inputProof,
-        { gasLimit: 3000000 }
+        encryptedBid.inputProof
     );
 }
 
@@ -56,30 +56,37 @@ export async function finalizeAuction(contract, batchSize) {
     let totalFHEGasConsumed = 0;
 
     while (stillRunning) {
-        // 1) Call the contract function
+        // 1) Call the contract function to process a batch of finalization
         const tx = await contract.finalizeAuction(batchSize);
 
-        // 2) Wait for the tx receipt
+        // 2) Wait for the transaction receipt
         const receipt = await tx.wait();
 
         if (network.name === "hardhat") {
-            // Calculate FHE gas consumed if on mocked FHEVM
+            // Calculate FHE gas consumed if on a mocked FHEVM network
             const FHEGasConsumed = getFHEGasFromTxReceipt(receipt);
             totalFHEGasConsumed += FHEGasConsumed;
         }
 
-        // 3) Accumulate gasUsed
+        // 3) Accumulate total gas used
         totalGasUsed += BigInt(receipt.gasUsed);
 
-        // 4) Check status
-        const ci = await contract.currentIndex();    // currentIndex
-        const bc = await contract.bidCounter();      // bidCounter
-        const fin = await contract.isFinalized();    // bool
+        // 4) Retrieve the auction state and bid counter from the contract
+        const auctionState = await contract.auctionState();
+        // Destructure the returned tuple (assuming the order: swapCallCount, currentIndex, isFinalized)
+        const { currentIndex, isFinalized } = auctionState;
+        const bidCounter = await contract.bidCounter();
 
-        if (fin || ci.toString() === bc.toString()) {
+        // 5) Determine if the auction processing is complete
+        // We check if the auction is finalized or if the currentIndex equals bidCounter.
+        // (Conversion to string is used if bidCounter/currentIndex are BigNumber objects.)
+        if (isFinalized || currentIndex.toString() === bidCounter.toString()) {
             stillRunning = false;
         }
     }
+
+
+    await awaitAllDecryptionResults();
 
     // Return gas usage data
     return {
@@ -87,7 +94,6 @@ export async function finalizeAuction(contract, batchSize) {
         totalFHEGasConsumed
     };
 }
-
 
 
 
@@ -254,8 +260,8 @@ export async function displayAllBidOutputs(
     useDebug = false
 ) {
 
-    const settlementPrice = await blindAuction.settlementPrice();
-    const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
+    const decryptSettlementPrice = await blindAuction.decryptedSettlementPrice();
+    // const decryptSettlementPrice = await debug.decrypt64(settlementPrice);
 
     console.log(`\n\t\t === BID OUTPUTS INFO ===`);
     console.log(`\t\t Nb bidders: ${bidderInfo.length} | Settlement Price: ${decryptSettlementPrice} \n`);
@@ -263,7 +269,7 @@ export async function displayAllBidOutputs(
 
 
     // Print a table header for Bid Outputs
-    console.log("\t\t ----------------------------------------------");
+    console.log("\t\t -----------------------------------");
     console.log(
         "\t\t | " +
         padString("Surname", 10) +
@@ -271,11 +277,9 @@ export async function displayAllBidOutputs(
         padString("Deposit", 7) +
         " | " +
         padString("Quantity", 8) +
-        " | " +
-        padString("Amount", 8) +
-        " |"
+        " | "
     );
-    console.log("\t\t ----------------------------------------------");
+    console.log("\t\t -----------------------------------");
 
 
 
@@ -296,14 +300,12 @@ export async function displayAllBidOutputs(
             padString(decryptedDeposit, 7) +
             " | " +
             padString(decryptedQuantity, 8) +
-            " | " +
-            padString(BigInt(decryptSettlementPrice * decryptedQuantity), 8) +
-            " |"
+            " | "
         );
     }
 
     // End line
-    console.log("\t\t ----------------------------------------------\n");
+    console.log("\t\t -----------------------------------\n");
 
 }
 
