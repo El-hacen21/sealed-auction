@@ -127,6 +127,15 @@ contract ConfidentialTokensAuctionAlternative is
         bidCounter++;
     }
 
+    /**
+     * @notice Returns the bid data for a given bid index.
+     * @param index The bid ID.
+     * @return The corresponding BidData struct.
+     */
+    function getBid(uint8 index) external view returns (BidData memory) {
+        return bids[index];
+    }
+
     // --------------------------------------------------
     // Finalisation Alternative de l'Enchère (Étape 1: Global)
     // --------------------------------------------------
@@ -171,38 +180,38 @@ contract ConfidentialTokensAuctionAlternative is
     }
 
     function assignERemain() external {
+        // Tri implicite des bids par prix décroissant (simulé via la logique de calcul)
         for (uint8 i = 0; i < bidCounter; i++) {
             BidData storage currentBid = bids[i];
-            euint64 price_i = currentBid.ePrice;
             euint64 eBidsBefore_i = TFHE.asEuint64(0);
 
-            // Calcul des bids avant i avec price_j >= price_i et >= minBidPrice
+            // 1. Ajouter toutes les offres avec prix > price_i (peu importe leur position)
+            for (uint8 j = 0; j < bidCounter; j++) {
+                if (j == i) continue;
+                BidData storage bidJ = bids[j];
+
+                // Condition : (prix_j > prix_i) ET (prix_j >= minBidPrice)
+                ebool cond = TFHE.and(TFHE.gt(bidJ.ePrice, currentBid.ePrice), TFHE.ge(bidJ.ePrice, minBidPrice));
+                eBidsBefore_i = TFHE.add(eBidsBefore_i, TFHE.select(cond, bidJ.eQuantity, TFHE.asEuint64(0)));
+            }
+
+            // 2. Ajouter les offres avec même prix mais index inférieur (priorité d'ordre)
             for (uint8 j = 0; j < i; j++) {
                 BidData storage bidJ = bids[j];
-                euint64 price_j = bidJ.ePrice;
-                euint64 qty_j = bidJ.eQuantity;
-                ebool cond = TFHE.and(TFHE.ge(price_j, price_i), TFHE.ge(price_j, minBidPrice));
-                eBidsBefore_i = TFHE.add(eBidsBefore_i, TFHE.select(cond, qty_j, TFHE.asEuint64(0)));
+                // Condition : (prix_j == prix_i) ET (prix_j >= minBidPrice)
+                ebool cond = TFHE.and(TFHE.eq(bidJ.ePrice, currentBid.ePrice), TFHE.ge(bidJ.ePrice, minBidPrice));
+                eBidsBefore_i = TFHE.add(eBidsBefore_i, TFHE.select(cond, bidJ.eQuantity, TFHE.asEuint64(0)));
             }
 
-            // Soustraction des bids après i avec price_j > price_i et >= minBidPrice
-            for (uint8 j = i + 1; j < bidCounter; j++) {
-                BidData storage bidJ = bids[j];
-                euint64 price_j = bidJ.ePrice;
-                euint64 qty_j = bidJ.eQuantity;
-                ebool cond = TFHE.and(TFHE.gt(price_j, price_i), TFHE.ge(price_j, minBidPrice));
-                eBidsBefore_i = TFHE.sub(eBidsBefore_i, TFHE.select(cond, qty_j, TFHE.asEuint64(0)));
-            }
-
-            eBidsBefore_i = TFHE.max(eBidsBefore_i, TFHE.asEuint64(0));
-            currentBid.eRemain = TFHE.select(
-                TFHE.ge(totalTokens, eBidsBefore_i),
-                TFHE.sub(totalTokens, eBidsBefore_i),
-                TFHE.asEuint64(0)
-            );
+            // Calcul final de eRemain_i
+            eBidsBefore_i = TFHE.min(eBidsBefore_i, totalTokens); // Pas de dépassement
+            currentBid.eRemain = TFHE.sub(totalTokens, eBidsBefore_i);
+            currentBid.eRemain = TFHE.max(currentBid.eRemain, TFHE.asEuint64(0)); // Clamp à zéro
             TFHE.allowThis(currentBid.eRemain);
         }
     }
+
+    
 
     function allocateBatch(uint8 _batchSize) external onlyOwner onlyAfterEnd {
         if (globalOfferExceedsDemand) {

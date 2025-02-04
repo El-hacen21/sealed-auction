@@ -217,6 +217,7 @@ export async function displayAllBids(deployer, fhevm, blindAuction, contractAddr
         try {
             const decryptedPrice = await decryptAndDisplay(deployer, fhevm, bid.ePrice, contractAddress, useDebug, "decrypt64");
             const decryptedQuantity = await decryptAndDisplay(deployer, fhevm, bid.eQuantity, contractAddress, useDebug, "decrypt64");
+            const decryptedRemain = await decryptAndDisplay(deployer, fhevm, bid.eRemain, contractAddress, useDebug, "decrypt64");
 
             // Find the corresponding surname using the bidder's address
             const bidderAddress = bid.account;
@@ -234,7 +235,9 @@ export async function displayAllBids(deployer, fhevm, blindAuction, contractAddr
                 padString(decryptedPrice, 7) +
                 " | " +
                 padString(decryptedQuantity, 8) +
-                " |"
+                " |" +
+                padString(decryptedRemain, 8) +
+                " |" 
             );
         } catch (err) {
             console.error(`\t\t Failed to decrypt bid ${i}: ${err.message}`);

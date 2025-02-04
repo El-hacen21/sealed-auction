@@ -12,7 +12,8 @@ import {
     decryptAndDisplay,
     getDecryptedBalance,
     transferTokens,
-    approveTokens
+    approveTokens,
+    displayAllBids
 } from './Helpers';
 import { initGateway, awaitAllDecryptionResults } from "../asyncDecrypt";
 import { deployConfidentialERC20Fixture } from "../confidentialERC20/ConfidentialERC20.fixture";
@@ -50,9 +51,9 @@ describe('Test ConfidentialTokensAuctionAlternative', function () {
         const auctionContract = await deployConfidentialTokensAuctionAlternativeFixture(
             this.signers.alice,
             this.contractERC20Address,
-            2,         // Total tokens available in the auction
+            5,         // Total tokens available in the auction
             1000000,    // Auction duration (in seconds)
-            2        // Minimum bid price (pmin)
+            6        // Minimum bid price (pmin)
         );
 
         // Log deployment gas usage if desired
@@ -113,15 +114,24 @@ describe('Test ConfidentialTokensAuctionAlternative', function () {
             // Place bids from different participants:
             // Only bids with price >= minBidPrice (here 5) are considered.
             // Carol places a bid with price 1 (below min), so it will be filtered out.
-            await placeBid(this.fhevm, this.alternativeAuction, this.contractAddress, carol, 10, 3);   // Carol: 3 units @ price 10
+            await placeBid(this.fhevm, this.alternativeAuction, this.contractAddress, dave, 10, 3);   // Carol: 3 units @ price 10
             await placeBid(this.fhevm, this.alternativeAuction, this.contractAddress, dave, 6, 1);    // Dave: 1 unit @ price 6
             await placeBid(this.fhevm, this.alternativeAuction, this.contractAddress, eve, 15, 1);    // Eve: 3 units @ price 15
+            
 
             // Advance time to after the auction end
             await jumpToAuctionEnd(this.alternativeAuction);
 
-            await this.alternativeAuction.connect(alice).assignERemain();
-            
+            const tEremain = await this.alternativeAuction.connect(alice).assignERemain();
+            const receipt = await tEremain.wait();
+
+            if (network.name === "hardhat") {
+                // Gas log (kept)
+                const FHEGasConsumed = getFHEGasFromTxReceipt(receipt);
+                console.log("\t\t - FHE Gas Consumed:", FHEGasConsumed);
+            }
+            // Gas log (kept)
+            console.log("\t\t - Native Gas Used:", receipt.gasUsed);
 
             // --- Phase 1: Global finalization ---
             // Call finalizeAuctionAlternative to compute global data (e.g. globalOfferExceedsDemand)
@@ -140,6 +150,14 @@ describe('Test ConfidentialTokensAuctionAlternative', function () {
             await tx.wait();
             // await awaitAllDecryptionResults();
 
+            const bidderInfo = [
+                // { address: carol.address, surname: "Carol" },
+                { address: dave.address, surname: "Dave" },
+                { address: eve.address, surname: "Eve" },
+            ];
+
+
+            await displayAllBids(this.signers.alice, this.fhevm, this.alternativeAuction, this.contractAddress, bidderInfo, true);
 
             // // Vérifier que l'allocation a bien été effectuée sur l'ensemble des bids
             // let totalAllocated = BigInt(0);
