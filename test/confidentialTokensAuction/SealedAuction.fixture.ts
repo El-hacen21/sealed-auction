@@ -2,15 +2,17 @@ import { AddressLike, BigNumberish, Signer } from 'ethers';
 import { ethers } from 'hardhat';
 import { FactoryOptions } from "@nomicfoundation/hardhat-ethers/types";
 
-import type { ConfidentialTokensAuctionAlternative } from '../../types';
+import type { SealedAuction } from '../../types';
 
-export async function deployConfidentialTokensAuctionAlternativeFixture(
+export async function SealedAucitonFixture(
   account: Signer,
   tokenContractAddress: AddressLike,
   totalTokens: BigNumberish,
   biddingTime: BigNumberish,
-  minBidPrice: BigNumberish
-): Promise<ConfidentialTokensAuctionAlternative> {
+  minBidPrice: BigNumberish,
+  minBidQuantity: BigNumberish,
+  maxBidsPerAddress: BigNumberish
+): Promise<SealedAuction> {
   // Définir les options de la factory avec le Signer
   const factoryOptions: FactoryOptions = {
     signer: account
@@ -18,7 +20,7 @@ export async function deployConfidentialTokensAuctionAlternativeFixture(
 
   // Récupérer la factory pour le contrat alternatif (sans librairies supplémentaires)
   const contractFactory = await ethers.getContractFactory(
-    "ConfidentialTokensAuctionAlternative",
+    "SealedAuciton",
     factoryOptions
   );
 
@@ -28,9 +30,11 @@ export async function deployConfidentialTokensAuctionAlternativeFixture(
     tokenContractAddress,
     totalTokens,
     biddingTime,
-    minBidPrice
+    minBidPrice,
+    minBidQuantity,
+    maxBidsPerAddress,
   );
 
   await contract.waitForDeployment();
-  return contract as ConfidentialTokensAuctionAlternative;
+  return contract as SealedAuction;
 }
