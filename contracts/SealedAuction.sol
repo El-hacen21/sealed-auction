@@ -222,14 +222,21 @@ contract SealedAuction is
         uint64 end = (start + batchSize > bidCount) ? bidCount : start + batchSize;
 
         for (uint64 i = start; i < end; i++) {
+            // Initialize the cumulative quantity of better bids for bid i.
             euint64 sumBefore = TFHE.asEuint64(0);
             for (uint64 j = 0; j < bidCount; j++) {
                 if (j == i) continue;
-                // Only consider valid bids in comparison
-                ebool isValidAndBetter = TFHE.or(
-                    TFHE.and(bids[j].isValid, TFHE.gt(bids[j].eBidPrice, bids[i].eBidPrice)),
-                    TFHE.and(TFHE.and(bids[j].isValid, TFHE.eq(bids[j].eBidPrice, bids[i].eBidPrice)), (j < i))
-                );
+                ebool isValidAndBetter;
+                if (j < i) {
+                    // For j < i: A bid is considered "better" if it is valid and its price is
+                    // greater than or equal to the price of bid i (covering the case of equality since j < i).
+                    isValidAndBetter = TFHE.and(bids[j].isValid, TFHE.ge(bids[j].eBidPrice, bids[i].eBidPrice));
+                } else {
+                    // j > i
+                    // For j > i: A bid is considered "better" only if it is valid
+                    // and its price is strictly greater than bid i's price.
+                    isValidAndBetter = TFHE.and(bids[j].isValid, TFHE.gt(bids[j].eBidPrice, bids[i].eBidPrice));
+                }
                 euint64 addQty = TFHE.select(isValidAndBetter, bids[j].eBidQty, TFHE.asEuint64(0));
                 sumBefore = TFHE.add(sumBefore, addQty);
             }
