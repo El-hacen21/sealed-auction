@@ -207,6 +207,15 @@ contract SealedAuction is
         isDemandOverSupply = result;
     }
 
+    /**
+     * @dev Pre-computes cumulative quantities of higher/earlier bids for each bid in batch.
+     * - For each bid in the batch, calculates sum of quantities from valid bids that:
+     *   1. Have higher bid price than current bid, OR
+     *   2. Same price but submitted earlier (using bid index)
+     * - Stores results in eCumulativeBetterBids to determine supply allocation priority.
+     * - Required when demand > supply to establish cutoff point for allocations.
+     * @param batchSize Number of bids to process in this batch
+     */
     function computeBidsBefore(uint64 batchSize) external onlyOwner onlyAfterEnd {
         require(isDemandOverSupply && bidCount > 0, "No need to call computeBidsBefore");
         uint64 start = compIndex;
@@ -233,6 +242,16 @@ contract SealedAuction is
         compIndex = end;
     }
 
+    /**
+     * @dev Processes bid allocations in batches, determining final settlement price.
+     * Two allocation modes:
+     * 1. Demand <= Supply: All valid bids fully allocated. Settlement price = minimum bid price.
+     * 2. Demand > Supply: Bids allocated based on:
+     *    - Priority given to higher prices (using precomputed eCumulativeBetterBids)
+     *    - Settlement price becomes highest price where cumulative allocations <= supply
+     * Updates eSettlementPrice with the clearing price and initiates decryption.
+     * @param batchSize Number of bids to process in this batch
+     */
     function allocateBids(uint64 batchSize) external onlyOwner onlyAfterEnd {
         require(allocIndex <= bidCount && bidCount > 0, "Allocation completed");
         uint64 start = allocIndex;
