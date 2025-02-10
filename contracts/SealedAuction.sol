@@ -107,7 +107,6 @@ contract SealedAuction is
         uint64 _penaltyFee
     ) Ownable(auctionOwner) {
         // require(msg.sender == OFFICIAL_FACTORY, "Must be deployed via factory");
-
         assetToken = _assetToken;
         paymentToken = _paymentToken;
 
