@@ -228,10 +228,7 @@ contract SealedAuction is
                 // Only consider valid bids in comparison
                 ebool isValidAndBetter = TFHE.or(
                     TFHE.and(bids[j].isValid, TFHE.gt(bids[j].eBidPrice, bids[i].eBidPrice)),
-                    TFHE.and(
-                        TFHE.and(bids[j].isValid, TFHE.eq(bids[j].eBidPrice, bids[i].eBidPrice)),
-                        TFHE.asEbool(j < i)
-                    )
+                    TFHE.and(TFHE.and(bids[j].isValid, TFHE.eq(bids[j].eBidPrice, bids[i].eBidPrice)), (j < i))
                 );
                 euint64 addQty = TFHE.select(isValidAndBetter, bids[j].eBidQty, TFHE.asEuint64(0));
                 sumBefore = TFHE.add(sumBefore, addQty);
