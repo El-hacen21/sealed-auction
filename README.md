@@ -2,7 +2,7 @@
 
 # Sealed single price auction using Zama's fhEVM by El-Hacen Diallo & Matthieu Rambaud
 
-This repository implements **confidential single-price auctions** using [Zama's FHEVM](https://docs.zama.ai/fhevm). Bidders submit **encrypted** prices and quantities for a batch of tokens, ensuring privacy on-chain. The final **single settlement price** is the **lowest** price required to sell the last token.
+This repository implements **confidential single-price auctions** using [Zama's FHEVM](https://docs.zama.ai/fhevm). Bidders submit **encrypted** prices and quantities for a batch of tokens, ensuring privacy on-chain. The final **single settlement price** is the price from the bid **required to purchase the last token sold**.
 
 ---
 
@@ -39,7 +39,9 @@ The auction contract:
 4. Computes a **single clearing price** that every winning bidder pays (the lowest successful price for the last token sold).
 5. Refunds any leftover deposit to bidders who overpaid and returns unsold tokens to the seller if demand is under-subscribed.
 
-> **Note**: To discourage invalid or excessively low bids, the contract can charge a **penalty fee** (`DEFAULT_PENALTY_FEE`). Such bids remain encrypted on-chain (`isValid` remains hidden), so the contract never explicitly reveals who placed an invalid bid.
+> **Note**: To discourage invalid or excessively low bids, the contract can charge a **penalty fee** (`DEFAULT_PENALTY_FEE`) for the bids having their quantity below a public minimum: `minQty` or their price below a public minimum: `minPrice`.
+> Such bids are called invalid.
+> Bids are flagged by a bit which remains encrypted `isValid` (1 for valid and 0 for invalid), so the contract never reveals who placed an invalid bid.
 
 ---
 
@@ -164,14 +166,25 @@ The auction contract:
 
 3. **No Modification**  
    - Once placed, a bid cannot be modified before the auction ends.  
-   - Bidders rely on their off-chain encryption to keep prices hidden from others.
 
 ### 3. Finalization & Allocation
 
 1. **Settlement Phase**  
    - After `endTime`, only the owner can call `finalize()`.  
-   - The contract checks if the total (encrypted) demand exceeds `supply`.  
-   - If over-subscribed, the settlement price becomes the lowest among the valid bids needed to sell all tokens.  
+   - The contract computes the encrypted boolean `eDemandOverSupply` which says if yes or no the total (encrypted) encrypted quantities demanded by valid bids exceeds `supply`.
+Then the contracts decripts this boolean into `isDemandOverSupply`: **this single boolean the only additional information revealed by the contract**.
+   - If under-subscribed (the easy case), i.e., `eDemandOverSupply`=0, then the settlement price (`eMarketPrice`) becomes equal to the lowest `encPrice` among the valid bids.
+   - If over-subscribed (the hard case), i.e., `eDemandOverSupply`=1, then the settlement price becomes the lowest among the valid bids needed to sell all tokens.
+If two bids, with indices, i and j have equal `encPrice`, then the bid arrived first, i.e., the one with the lower index, has priority.
+Let us describe the details.
+For each bid i, the contract first determines if any token can be sold to i: this is flagged in the encrypted boolean `canSell`.
+Namely, `canSell` is set to 1 if the sum of the quantities requested by the bidders j higher than i (called `eCumulativeBetterBids[i]`, computed via `computeBidsBefore`), i.e., those j with a strictly higher `encPrice` than i, or an equal `encPrice` but arrived before (``j<i``), is lower than the total supply.
+Then the contract homomorphically computes the encrypted quantity: `eSold` effectively sold to i: either 0 if `canSell`=0, else: ```min(`encQty[i]`, `eCumulativeBetterBids[i]`)```.
+The min is here to handle the situation where i is the last served bidder, i.e., it has `canSell[i]`=1, but since the better bids will be served first, there remains too few supply to sell to i the whole `encQty` which i asked for.
+Finally, the settlement price is set as the min over the encrypted prices of all the winning bidders, i.e., those with `canSell`=1.
+```
+
+```
    - The contract requests an off-chain decryption of `eSettlementPrice` after batch computations (`computeBidsBefore` & `allocateBids`).
 
 2. **Revealing the Final Price**  
@@ -206,20 +219,17 @@ Here, you can describe or show typical test results, any coverage reports, scree
 ####  Gas cost
 ![Gas Test](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
 
+---
 
-----
 
 ## Limitations & Ongoing Work
-
 1. **ConfidentialWETH Payment Flow**  
    - Currently, the auction logic supports confidentialERC20 tokens for payment.  
    - We have partially prepared a flow for using ConfidentialWETH, but **this functionality has not been fully tested or finalized**.  
    - Ongoing development will focus on validating ConfidentialWETH transactions and ensuring compatibility.
-
 2. **React Frontend Interface**  
    - A basic React interface has been set up for user interaction with the contracts, but additional features and UX improvements are still in progress.  
    - Future updates will provide a more user-friendly bidding process, real-time status updates, and extended error-handling.
-
 We appreciate any feedback on these areas and are actively working to enhance and complete the above features.
 
 ---
