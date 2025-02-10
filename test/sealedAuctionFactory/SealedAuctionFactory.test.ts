@@ -16,7 +16,6 @@ describe("SealedAuctionFactory", function () {
     await initSigners();
     this.signers = await getSigners();
     auctionOwner = this.signers.alice;
-    user = this.signers.bob;
     // Deploy the factory only once because the auction contract uses a hard-coded factory address.
     factory = await SealedAuctionFactoryFixture();
     this.fhevm = await createInstance();

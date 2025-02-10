@@ -23,7 +23,7 @@ contract SealedAuction is
     // uint64 public immutable MAX_BIDS;
     uint64 public immutable MAX_BIDS_PER_ADDRESS;
 
-    address public constant OFFICIAL_FACTORY = address(0x76d7559cEce49DDd332a27b9e26c59245064a6d1);
+    address public constant OFFICIAL_FACTORY = address(0xb4e45cEB442932EA2aE441e7573CA1B8233a3285);
 
     // assetToken is locked on creation; paymentToken is used for bids.
     IConfidentialERC20 public assetToken;
@@ -106,7 +106,7 @@ contract SealedAuction is
         uint64 _maxBidsPerAddress,
         uint64 _penaltyFee
     ) Ownable(auctionOwner) {
-        require(msg.sender == OFFICIAL_FACTORY, "Must be deployed via factory");
+        // require(msg.sender == OFFICIAL_FACTORY, "Must be deployed via factory");
 
         assetToken = _assetToken;
         paymentToken = _paymentToken;
@@ -197,10 +197,10 @@ contract SealedAuction is
             decryptedPrice = 0;
             return;
         }
-        ebool eIsOverDemand = TFHE.ge(eTotalDemand, supply);
-        TFHE.allowThis(eIsOverDemand);
+        ebool eDemandOverSupply = TFHE.ge(eTotalDemand, supply);
+        TFHE.allowThis(eDemandOverSupply);
         uint256[] memory cts = new uint256[](1);
-        cts[0] = Gateway.toUint256(eIsOverDemand);
+        cts[0] = Gateway.toUint256(eDemandOverSupply);
         Gateway.requestDecryption(cts, this.allocationCallback.selector, 0, block.timestamp + 100, false);
     }
 

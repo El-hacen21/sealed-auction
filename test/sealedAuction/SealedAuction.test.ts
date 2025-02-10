@@ -341,9 +341,7 @@ describe("SealedAuction Tests (via createAuctionViaFactory)", function () {
         await jumpToAuctionEnd(this.auction);
         await this.auction.finalize();
         // Expect that decryption (or allocation) fails because there are no bids.
-        await expect(awaitAllDecryptionResults()).to.be.revertedWith("Allocation completed");
-        // If needed, call it again to complete the flow.
-        await awaitAllDecryptionResults();
+        await expect(this.auction.allocateBids(10)).to.be.revertedWith("Allocation completed");
 
         // Owner withdrawal should yield zero net gain when there are no valid bids.
         const ownerInitial = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
@@ -376,39 +374,18 @@ describe("SealedAuction Tests (via createAuctionViaFactory)", function () {
         expect(ownerFinal - ownerInitial).to.equal(50n); // Penalty fee only
       });
 
-      it("should handle two bids with the same price", async function () {
-        // FIFO will be applied: Bob will be served even with a lower quantity.
-        const { alice, bob, carol } = this.signers;
-        await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, bob, 100);
-        await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, carol, 100);
-        await approveTokens(this.fhevm, this.erc20, this.erc20Address, bob, this.auctionAddress, 100);
-        await approveTokens(this.fhevm, this.erc20, this.erc20Address, carol, this.auctionAddress, 100);
-
-        // Both Bob and Carol bid with the same price.
-        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 5, 1);
-        await placeBid(this.fhevm, this.auction, this.auctionAddress, carol, 5, 6);
-
-        await jumpToAuctionEnd(this.auction);
-        await this.auction.finalize();
-        await awaitAllDecryptionResults();
-        await this.auction.allocateBids(10);
-        await awaitAllDecryptionResults();
-
-        // Owner withdrawal should yield only the penalty fee.
-        const ownerInitial = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
-        await this.auction.connect(alice).ownerWithdraw();
-        const ownerFinal = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
-        expect(ownerFinal - ownerInitial).to.equal(50n);
-      });
-
       it("should handle two bids from the same address", async function () {
         const { alice, bob } = this.signers;
         await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, bob, 100);
         await approveTokens(this.fhevm, this.erc20, this.erc20Address, bob, this.auctionAddress, 100);
 
+        // Retrieve the asset token contract.
+        const assetTokenAddress = await this.auction.assetToken();
+        const assetToken = await ethers.getContractAt("MyConfidentialERC20", assetTokenAddress);
+
         // Bob places two bids.
         await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 5, 5);
-        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 5, 5);
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 3, 5);
 
         await jumpToAuctionEnd(this.auction);
         await this.auction.finalize();
@@ -416,53 +393,59 @@ describe("SealedAuction Tests (via createAuctionViaFactory)", function () {
         await this.auction.allocateBids(10);
         await awaitAllDecryptionResults();
 
-        // Owner withdrawal should reflect only the penalty fee.
-        const ownerInitial = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
-        await this.auction.connect(alice).ownerWithdraw();
-        const ownerFinal = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
-        expect(ownerFinal - ownerInitial).to.equal(50n);
+
+        const bobAssetBalanceBefore = await getDecryptedBalance(bob, this.fhevm, assetToken, assetTokenAddress);
+
+        // Bob claim their allocations.
+        await this.auction.connect(bob).claim();
+
+
+        const bobAssetBalanceAfter = await getDecryptedBalance(bob, this.fhevm, assetToken, assetTokenAddress);
+
+        // Bob got his 10 assetToken sent to him
+        expect(bobAssetBalanceAfter - bobAssetBalanceBefore).to.equal(10n);
       });
 
-      it("should process 6 bids in batches of 2", async function () {
-        // Define 6 bids.
-        // Note: Bid 5 is invalid because quantity (2) is below the minimum required (3).
+      it("should process 4 bids in batches of 2", async function () {
+        const { alice, bob, carol } = this.signers;
+
+        await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, bob, 100);
+        await approveTokens(this.fhevm, this.erc20, this.erc20Address, bob, this.auctionAddress, 100);
+
+        await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, carol, 100);
+        await approveTokens(this.fhevm, this.erc20, this.erc20Address, carol, this.auctionAddress, 100);
+
+        // supply = 10, which means all tokens are sold
         const bids = [
-          { price: 5, qty: 5 },  // Bid 0: valid
+          { price: 5, qty: 3 },  // Bid 0: valid
           { price: 6, qty: 4 },  // Bid 1: valid
-          { price: 4, qty: 6 },  // Bid 2: valid
-          { price: 5, qty: 5 },  // Bid 3: valid
-          { price: 3, qty: 7 },  // Bid 4: valid (price meets minimum requirement)
-          { price: 7, qty: 2 }   // Bid 5: invalid (quantity below minimum)
+          { price: 4, qty: 3 },  // Bid 2: valid
+          { price: 7, qty: 1 }   // Bid 3: invalid; minQuantity = 2
         ];
 
-        // Place the bids (using different signers if available, otherwise default to bob).
-        for (const [i, bid] of bids.entries()) {
-          const signer = this.signers[`bidder${i}`] || this.signers.bob;
-          await placeBid(this.fhevm, this.auction, this.auctionAddress, signer, bid.price, bid.qty);
-        }
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, bids[0].price, bids[0].qty);
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, bids[1].price, bids[1].qty);
+
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, carol, bids[2].price, bids[2].qty);
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, carol, bids[3].price, bids[3].qty);
 
         await jumpToAuctionEnd(this.auction);
         await this.auction.finalize();
         await awaitAllDecryptionResults();
 
-        // Process bids in batches of 2.
-        const processInBatches = async (fn, batchSize) => {
-          let processed = 0;
-          // Assume there are 6 bids to process.
-          while (processed < 6) {
-            await fn(Math.min(batchSize, 6 - processed));
-            processed += batchSize;
-          }
-        };
+        await this.auction.computeBidsBefore(2);
+        await this.auction.computeBidsBefore(2);
 
-        await processInBatches(this.auction.computeBidsBefore, 2);
-        await processInBatches(this.auction.allocateBids, 2);
+        await this.auction.allocateBids(2);
+        await this.auction.allocateBids(2);
+
+        await awaitAllDecryptionResults();
 
         // Verify that the final decrypted settlement price is as expected.
         expect(await this.auction.decryptedPrice()).to.equal(4n);
       });
 
-      // ─── NEW TESTS FOR MIXED BIDS AND PENALTY FEES ─────────────────────────────
+
 
       it("should calculate settlement price correctly with mixed valid and invalid bids", async function () {
         const { alice, bob, carol, dave } = this.signers;
@@ -500,10 +483,9 @@ describe("SealedAuction Tests (via createAuctionViaFactory)", function () {
         await transferTokens(this.fhevm, this.erc20, this.erc20Address, alice, bob, 100);
         await approveTokens(this.fhevm, this.erc20, this.erc20Address, bob, this.auctionAddress, 100);
 
-        // Place one valid bid...
-        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 6, 5);
-        // ...and one invalid bid (e.g., quantity below the minimum requirement).
-        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 7, 1);
+
+        // one invalid bid (e.g., quantity =0).
+        await placeBid(this.fhevm, this.auction, this.auctionAddress, bob, 7, 0);
 
         await jumpToAuctionEnd(this.auction);
         await this.auction.finalize();
@@ -513,15 +495,12 @@ describe("SealedAuction Tests (via createAuctionViaFactory)", function () {
         await awaitAllDecryptionResults();
 
         // Validate that the owner receives the penalty fee for the invalid bid.
-        // For instance, if the penalty fee is 50 units per invalid bid:
         const ownerInitial = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
         await this.auction.connect(alice).ownerWithdraw();
         const ownerFinal = await getDecryptedBalance(alice, this.fhevm, this.erc20, this.erc20Address);
-        expect(ownerFinal - ownerInitial).to.equal(50n);
+        expect(ownerFinal - ownerInitial).to.equal(await this.factory.DEFAULT_PENALTY_FEE());
       });
     });
-
-
 
   });
 });

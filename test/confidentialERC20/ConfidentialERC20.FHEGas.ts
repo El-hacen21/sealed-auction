@@ -13,7 +13,7 @@ describe("ConfidentialERC20:FHEGas", function () {
   });
 
   beforeEach(async function () {
-    const contract = await deployConfidentialERC20Fixture();
+    const contract = await deployConfidentialERC20Fixture(this.signers.alice);
     this.contractAddress = await contract.getAddress();
     this.erc20 = contract;
     this.fhevm = await createInstance();

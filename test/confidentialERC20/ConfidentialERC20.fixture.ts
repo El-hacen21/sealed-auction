@@ -12,3 +12,5 @@ export async function deployConfidentialERC20Fixture(): Promise<MyConfidentialER
 
   return contract;
 }
+
+
