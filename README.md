@@ -212,7 +212,6 @@ The auction contract:
 ---
 
 ### Test Output
-Here, you can describe or show typical test results, any coverage reports, screenshots of logs, etc.
 
 #### SealAuction test
 ![SealAuction test](https://github.com/El-hacen21/sealed-auction/blob/main/tests_output.png)
