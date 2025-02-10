@@ -6,17 +6,29 @@ import "fhevm/config/ZamaFHEVMConfig.sol";
 import "fhevm/config/ZamaGatewayConfig.sol";
 import "fhevm/gateway/GatewayCaller.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
-import "hardhat/console.sol";
+import "hardhat/console.sol"; // for debug
+import { IConfidentialERC20 } from "fhevm-contracts/contracts/token/ERC20/IConfidentialERC20.sol";
+import { ReentrancyGuardTransient } from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
-import { ConfidentialERC20 } from "fhevm-contracts/contracts/token/ERC20/ConfidentialERC20.sol";
-
-contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatewayConfig, GatewayCaller {
+contract SealedAuction is
+    SepoliaZamaFHEVMConfig,
+    Ownable2Step,
+    SepoliaZamaGatewayConfig,
+    ReentrancyGuardTransient,
+    GatewayCaller
+{
     // Auction parameters
     uint256 public endTime;
     uint64 public supply;
-    uint64 public immutable MAX_BIDS;
+    // uint64 public immutable MAX_BIDS;
     uint64 public immutable MAX_BIDS_PER_ADDRESS;
-    ConfidentialERC20 public token;
+
+    address public constant OFFICIAL_FACTORY = address(0x76d7559cEce49DDd332a27b9e26c59245064a6d1);
+
+    // assetToken is locked on creation; paymentToken is used for bids.
+    IConfidentialERC20 public assetToken;
+    IConfidentialERC20 public paymentToken;
+
     uint64 public bidCount;
 
     // Price and quantity constraints
@@ -45,22 +57,28 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
     struct Outcome {
         euint64 eAllocatedQty;
         euint64 eTotalDeposit;
+        euint64 ePenalty;
         bool canClaim;
     }
-    mapping(address => Outcome) private outcomes;
+
+    euint64 public ePenaltyFee; // 1 Ether par exemple
+    // Global running total of penalty fees collected from invalid bids.
+    euint64 private eTotalPenaltyFees;
+
+    mapping(address => Outcome) public outcomes;
 
     // Auction state
     uint64 public allocIndex;
     uint64 public compIndex;
-    bool public isOverDemand;
+    bool public isDemandOverSupply;
 
-    euint128 private eTotalOffer;
+    euint64 private eTotalDemand;
+
+    bool private ownerHasWithdrawn;
 
     error TooEarly(uint256 time);
     error TooLate(uint256 time);
     error MaxBidsExceeded();
-    error InvalidMinPrice();
-    error InvalidMinQty();
 
     modifier onlyBeforeEnd() {
         if (block.timestamp >= endTime) revert TooLate(endTime);
@@ -78,20 +96,24 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
     }
 
     constructor(
-        ConfidentialERC20 _token,
+        address auctionOwner,
+        IConfidentialERC20 _assetToken,
+        IConfidentialERC20 _paymentToken,
         uint64 _supply,
         uint256 biddingTime,
         uint64 _minPrice,
         uint64 _minQty,
-        uint64 _maxBidsPerAddress
-    ) Ownable(msg.sender) {
-        if (_minPrice <= 0) revert InvalidMinPrice();
-        if (_minQty <= 0) revert InvalidMinQty();
+        uint64 _maxBidsPerAddress,
+        uint64 _penaltyFee
+    ) Ownable(auctionOwner) {
+        require(msg.sender == OFFICIAL_FACTORY, "Must be deployed via factory");
 
-        token = _token;
+        assetToken = _assetToken;
+        paymentToken = _paymentToken;
+
         endTime = block.timestamp + biddingTime;
         supply = _supply;
-        MAX_BIDS = 32;
+
         MAX_BIDS_PER_ADDRESS = _maxBidsPerAddress;
         bidCount = 0;
 
@@ -100,15 +122,24 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
         TFHE.allowThis(eMinPrice);
         TFHE.allowThis(eMinQty);
 
-        eSettlementPrice = eMinPrice;
+        eSettlementPrice = TFHE.asEuint64(0);
         decryptedPrice = 0;
         isDecPrice = false;
 
-        eTotalOffer = TFHE.asEuint128(0);
-        TFHE.allowThis(eTotalOffer);
+        eTotalDemand = TFHE.asEuint64(0);
+        TFHE.allowThis(eTotalDemand);
+
+        ownerHasWithdrawn = false;
+
+        // Initialize global total penalty fees to 0.
+        eTotalPenaltyFees = TFHE.asEuint64(0);
+        TFHE.allowThis(eTotalPenaltyFees);
+
+        ePenaltyFee = TFHE.asEuint64(_penaltyFee);
+        TFHE.allowThis(ePenaltyFee);
     }
 
-    function placeBid(einput encPrice, einput encQty, bytes calldata proof) external onlyBeforeEnd {
+    function placeBid(einput encPrice, einput encQty, bytes calldata proof) external nonReentrant onlyBeforeEnd {
         if (bidsPerAddress[msg.sender] >= MAX_BIDS_PER_ADDRESS) revert MaxBidsExceeded();
 
         euint64 price = TFHE.asEuint64(encPrice, proof);
@@ -125,33 +156,48 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
         ebool isValid = TFHE.and(priceValid, qtyValid);
         TFHE.allowThis(isValid);
 
-        euint64 eDeposit = TFHE.mul(price, qty);
+        euint64 eDeposit = TFHE.add(TFHE.mul(price, qty), ePenaltyFee);
         TFHE.allowThis(eDeposit);
         TFHE.allow(eDeposit, msg.sender);
+        TFHE.allowTransient(eDeposit, address(paymentToken));
+        require(paymentToken.transferFrom(msg.sender, address(this), eDeposit), "Payment transfer failed");
 
         Outcome storage o = outcomes[msg.sender];
-        o.eTotalDeposit = TFHE.add(o.eTotalDeposit, eDeposit);
         o.canClaim = false;
         o.eAllocatedQty = TFHE.asEuint64(0);
+        if (TFHE.isInitialized(o.ePenalty)) {
+            o.ePenalty = TFHE.select(isValid, TFHE.asEuint64(0), TFHE.add(o.ePenalty, ePenaltyFee));
+            o.eTotalDeposit = TFHE.add(o.eTotalDeposit, eDeposit);
+        } else {
+            o.eTotalDeposit = eDeposit;
+            o.ePenalty = TFHE.select(isValid, TFHE.asEuint64(0), ePenaltyFee);
+        }
+        TFHE.allowThis(o.ePenalty);
         TFHE.allowThis(o.eAllocatedQty);
-        TFHE.allow(o.eAllocatedQty, msg.sender);
         TFHE.allowThis(o.eTotalDeposit);
+        TFHE.allow(o.eAllocatedQty, msg.sender);
         TFHE.allow(o.eTotalDeposit, msg.sender);
+        TFHE.allow(o.ePenalty, msg.sender);
 
         bids[bidCount] = Bid({ bidder: msg.sender, eBidPrice: price, eBidQty: qty, isValid: isValid });
 
         bidsPerAddress[msg.sender]++;
         bidCount++;
 
-        eTotalOffer = TFHE.select(isValid, TFHE.add(eTotalOffer, qty), eTotalOffer);
-        TFHE.allowThis(eTotalOffer);
+        eTotalDemand = TFHE.select(isValid, TFHE.add(eTotalDemand, qty), eTotalDemand);
+        TFHE.allowThis(eTotalDemand);
 
-        TFHE.allowTransient(eDeposit, address(token));
-        token.transferFrom(msg.sender, address(this), eDeposit);
+        eTotalPenaltyFees = TFHE.add(eTotalPenaltyFees, o.ePenalty);
+        TFHE.allowThis(eTotalPenaltyFees);
     }
 
     function finalize() external onlyOwner onlyAfterEnd {
-        ebool eIsOverDemand = TFHE.ge(eTotalOffer, supply);
+        if (bidCount == 0) {
+            isDecPrice = true;
+            decryptedPrice = 0;
+            return;
+        }
+        ebool eIsOverDemand = TFHE.ge(eTotalDemand, supply);
         TFHE.allowThis(eIsOverDemand);
         uint256[] memory cts = new uint256[](1);
         cts[0] = Gateway.toUint256(eIsOverDemand);
@@ -159,11 +205,11 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
     }
 
     function allocationCallback(uint256, bool result) external onlyGateway {
-        isOverDemand = result;
+        isDemandOverSupply = result;
     }
 
     function computeBidsBefore(uint64 batchSize) external onlyOwner onlyAfterEnd {
-        require(isOverDemand, "No partial computation needed");
+        require(isDemandOverSupply && bidCount > 0, "No need to call computeBidsBefore");
         uint64 start = compIndex;
         uint64 end = (start + batchSize > bidCount) ? bidCount : start + batchSize;
 
@@ -189,17 +235,22 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
     }
 
     function allocateBids(uint64 batchSize) external onlyOwner onlyAfterEnd {
-        require(allocIndex <= bidCount, "Allocation completed");
+        require(allocIndex <= bidCount && bidCount > 0, "Allocation completed");
         uint64 start = allocIndex;
         uint64 end = (allocIndex + batchSize > bidCount) ? bidCount : allocIndex + batchSize;
 
         // Only first time use the max
         euint64 eMarketPrice = (allocIndex == 0) ? TFHE.asEuint64(type(uint64).max) : eSettlementPrice;
 
-        if (!isOverDemand) {
+        if (!isDemandOverSupply) {
             for (uint64 i = start; i < end; i++) {
                 Bid storage b = bids[i];
-                outcomes[b.bidder].eAllocatedQty = TFHE.select(b.isValid, b.eBidQty, TFHE.asEuint64(0));
+                outcomes[b.bidder].eAllocatedQty = TFHE.select(
+                    b.isValid,
+                    TFHE.add(outcomes[b.bidder].eAllocatedQty, b.eBidQty),
+                    TFHE.asEuint64(0)
+                );
+
                 TFHE.allowThis(outcomes[b.bidder].eAllocatedQty);
                 outcomes[b.bidder].canClaim = true;
                 eMarketPrice = TFHE.select(b.isValid, TFHE.min(eMarketPrice, b.eBidPrice), eMarketPrice);
@@ -214,9 +265,8 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
                     TFHE.min(b.eBidQty, TFHE.sub(supply, eCumulativeBetterBids[i])),
                     TFHE.asEuint64(0)
                 );
-
-                TFHE.allowThis(eSold);
-                outcomes[b.bidder].eAllocatedQty = eSold;
+                outcomes[b.bidder].eAllocatedQty = TFHE.add(outcomes[b.bidder].eAllocatedQty, eSold);
+                TFHE.allowThis(outcomes[b.bidder].eAllocatedQty);
                 outcomes[b.bidder].canClaim = true;
                 eMarketPrice = TFHE.select(canSell, TFHE.min(eMarketPrice, b.eBidPrice), eMarketPrice);
             }
@@ -236,24 +286,38 @@ contract SealedAuction is SepoliaZamaFHEVMConfig, Ownable2Step, SepoliaZamaGatew
         isDecPrice = true;
     }
 
+    // nonReentrant for extra protection
     function claim() external onlyAfterEnd onlyWhenPriceDecrypted {
         Outcome storage o = outcomes[msg.sender];
         require(o.canClaim, "Bid already claimed or cannot claim");
         o.canClaim = false;
-        euint64 totalCost = TFHE.mul(o.eAllocatedQty, decryptedPrice);
+
         //compute the refund
-        o.eTotalDeposit = TFHE.sub(o.eTotalDeposit, totalCost);
+        o.eTotalDeposit = TFHE.sub(o.eTotalDeposit, TFHE.add(o.ePenalty, TFHE.mul(o.eAllocatedQty, decryptedPrice)));
         TFHE.allowThis(o.eTotalDeposit);
-        TFHE.allowTransient(totalCost, address(token));
-        token.transfer(msg.sender, totalCost);
+        TFHE.allowTransient(o.eAllocatedQty, address(assetToken));
+        require(assetToken.transfer(msg.sender, o.eAllocatedQty), "Asset transfer failed");
+        //withdraw
+        TFHE.allowTransient(o.eTotalDeposit, address(paymentToken));
+        require(paymentToken.transfer(msg.sender, o.eTotalDeposit), "Withdraw failed");
+        //  o.eTotalDeposit = TFHE.asEuint64(0); not needed claim=false
     }
 
-    function withdraw() external onlyAfterEnd onlyWhenPriceDecrypted {
-        Outcome storage o = outcomes[msg.sender];
-        require(!o.canClaim, "Bid must be claimed before withdrawal");
-        euint64 refund = o.eTotalDeposit;
-        o.eTotalDeposit = TFHE.asEuint64(0);
-        TFHE.allowTransient(refund, address(token));
-        token.transfer(msg.sender, refund);
+    // nonReentrant for extra protection
+    function ownerWithdraw() external onlyOwner onlyAfterEnd nonReentrant onlyWhenPriceDecrypted {
+        require(!ownerHasWithdrawn, "Owner already withdrawn");
+        ownerHasWithdrawn = true;
+
+        // Add the penalty fees collected from invalid bids.
+        euint64 soldAmount = TFHE.add(TFHE.mul(eTotalDemand, decryptedPrice), eTotalPenaltyFees);
+
+        if (!isDemandOverSupply) {
+            //else all tokens are sold
+            euint64 unsoldToken = TFHE.sub(supply, eTotalDemand);
+            TFHE.allowTransient(unsoldToken, address(assetToken));
+            require(assetToken.transfer(msg.sender, unsoldToken), "Asset transfer failed");
+        }
+        TFHE.allowTransient(soldAmount, address(paymentToken));
+        require(paymentToken.transfer(msg.sender, soldAmount), "Payment transfer failed");
     }
 }

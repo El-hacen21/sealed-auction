@@ -18,5 +18,5 @@
   },
   "exclude": ["node_modules"],
   "files": ["./hardhat.config.ts"],
-  "include": ["src/**/*", "tasks/**/*", "test/**/*", "deploy/**/*", "types/"]
+  "include": ["src/**/*", "tasks/**/*", "test/**/*", "deploy/**/*", "types/", "../sealed-bid-fhevm/confidentialTokensAuction", "../sealed-bid-fhevm/gatewayDecrypt"]
 }

@@ -237,7 +237,7 @@ export async function displayAllBids(deployer, fhevm, blindAuction, contractAddr
                 padString(decryptedQuantity, 8) +
                 " |" +
                 padString(decryptedRemain, 8) +
-                " |" 
+                " |"
             );
         } catch (err) {
             console.error(`\t\t Failed to decrypt bid ${i}: ${err.message}`);
