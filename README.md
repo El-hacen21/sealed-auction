@@ -192,6 +192,18 @@ The auction contract:
 
 ---
 
+### Test Output
+Here, you can describe or show typical test results, any coverage reports, screenshots of logs, etc.
+
+![SealAuction test](https://github.com/El-hacen21/sealed-auction/blob/main/tests_output.png)
+
+![Gas Test](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
+
+
+![100% test converage of SealedAuction.sol](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
+
+---
+
 ## Deployment & Usage
 
 1. **Install Dependencies**
