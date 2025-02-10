@@ -195,12 +195,18 @@ The auction contract:
 ### Test Output
 Here, you can describe or show typical test results, any coverage reports, screenshots of logs, etc.
 
+#### SealAuction test
 ![SealAuction test](https://github.com/El-hacen21/sealed-auction/blob/main/tests_output.png)
 
+
+#### 100% test converage of SealedAuction.sol
+![100% test converage of SealedAuction.sol](https://github.com/El-hacen21/sealed-auction/blob/main/coverage.png)
+
+
+####  Gas cost
 ![Gas Test](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
 
 
-![100% test converage of SealedAuction.sol](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
 
 ---
 
