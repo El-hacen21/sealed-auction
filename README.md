@@ -60,10 +60,10 @@ The auction contract:
 |  (placing encrypted bids)|     | (Deploys SealedAuctions)
 +---------------------------+     +----------+------------+
                                             |
-             --------------------------------------------------------------------
+             -------------------------------------------------------------------
              |                                                                 |
-    (Payment ERC20 or Confidential WETH)                              (Asset ERC20)
-    defaultPaymentERC20 / defaultWETH                           defaultAssetERC20 (Tokens sold)
+   (Payment ERC20 or  ETher)                                              (Asset ERC20)
+ ConfidentialERC20 / ConfidentialWETH                               ConfidentialERC20 (Tokens sold)
 ```
 
 1. **SealedAuction**  
