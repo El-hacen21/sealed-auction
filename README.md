@@ -201,7 +201,7 @@ The auction contract:
 
 1. **Bidders (Claim)**  
    - Call `claim()` to receive the allocated quantity of tokens and to be refunded any excess deposit.  
-   - Invalid or losing bids may forfeit part or all of their penalty fee.
+   - Invalid bids may forfeit part or all of their penalty fee.
 
 2. **Owner (Withdrawal)**  
    - Calls `ownerWithdraw()` to collect the final proceeds:
