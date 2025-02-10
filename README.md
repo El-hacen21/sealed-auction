@@ -187,7 +187,7 @@ The auction contract:
        - **If** `canSell` = 0 → `eSold` = 0  
        - **Else** →  
          ```min(`encQty[i]`, `eCumulativeBetterBids[i]`)```  
-     - The `min` function handles cases where `i` is the last served bidder. If `canSell[i]` = 1 but the better bids are served first, there might be too little supply left to fully satisfy `encQty[i]`.  
+     - The `min` function handles cases where `i` is the last served bidder. Even if `canSell[i]` = 1 , since the bids better than i are served first, there might be too little supply left to fully satisfy `encQty[i]`.  
      - Finally, the settlement price is set as the `min` over the encrypted prices of all the winning bidders, i.e., those with `canSell` = 1.  
 
    - The contract requests an off-chain decryption of `eSettlementPrice` after batch computations (`computeBidsBefore` & `allocateBids`).
