@@ -171,21 +171,27 @@ The auction contract:
 
 1. **Settlement Phase**  
    - After `endTime`, only the owner can call `finalize()`.  
-   - The contract computes the encrypted boolean `eDemandOverSupply` which says if yes or no the total (encrypted) encrypted quantities demanded by valid bids exceeds `supply`.
-Then the contracts decripts this boolean into `isDemandOverSupply`: **this single boolean the only additional information revealed by the contract**.
-   - If under-subscribed (the easy case), i.e., `eDemandOverSupply`=0, then the settlement price (`eMarketPrice`) becomes equal to the lowest `encPrice` among the valid bids.
-   - If over-subscribed (the hard case), i.e., `eDemandOverSupply`=1, then the settlement price becomes the lowest among the valid bids needed to sell all tokens.
-If two bids, with indices, i and j have equal `encPrice`, then the bid arrived first, i.e., the one with the lower index, has priority.
-Let us describe the details.
-For each bid i, the contract first determines if any token can be sold to i: this is flagged in the encrypted boolean `canSell`.
-Namely, `canSell` is set to 1 if the sum of the quantities requested by the bidders j higher than i (called `eCumulativeBetterBids[i]`, computed via `computeBidsBefore`), i.e., those j with a strictly higher `encPrice` than i, or an equal `encPrice` but arrived before (``j<i``), is lower than the total supply.
-Then the contract homomorphically computes the encrypted quantity: `eSold` effectively sold to i: either 0 if `canSell`=0, else: ```min(`encQty[i]`, `eCumulativeBetterBids[i]`)```.
-The min is here to handle the situation where i is the last served bidder, i.e., it has `canSell[i]`=1, but since the better bids will be served first, there remains too few supply to sell to i the whole `encQty` which i asked for.
-Finally, the settlement price is set as the min over the encrypted prices of all the winning bidders, i.e., those with `canSell`=1.
-```
+   - The contract computes the encrypted boolean `eDemandOverSupply`, which indicates whether the total (encrypted) quantities demanded by valid bids exceed `supply`.  
+   - Then, the contract decrypts this boolean into `isDemandOverSupply`:  
+     **this single boolean is the only additional information revealed by the contract**.  
+   - If under-subscribed (the easy case), i.e., `eDemandOverSupply` = 0, then the settlement price (`eMarketPrice`) becomes equal to the lowest `encPrice` among the valid bids.  
+   - If over-subscribed (the hard case), i.e., `eDemandOverSupply` = 1, then the settlement price becomes the lowest `encPrice` among the valid bids needed to sell all tokens.  
 
-```
+     If two bids, with indices `i` and `j`, have equal `encPrice`, then the bid that arrived first (i.e., the one with the lower index) has priority.  
+
+     Let us describe the details:  
+
+     - For each bid `i`, the contract first determines if any token can be sold to `i`. This is flagged in the encrypted boolean `canSell`.  
+     - `canSell` is set to 1 if the sum of the quantities requested by bidders `j` higher than `i` (called `eCumulativeBetterBids[i]`, computed via `computeBidsBefore`) is lower than the total supply.  
+     - The contract homomorphically computes the encrypted quantity: `eSold`, effectively sold to `i`:  
+       - **If** `canSell` = 0 → `eSold` = 0  
+       - **Else** →  
+         ```min(`encQty[i]`, `eCumulativeBetterBids[i]`)```  
+     - The `min` function handles cases where `i` is the last served bidder. If `canSell[i]` = 1 but the better bids are served first, there might be too little supply left to fully satisfy `encQty[i]`.  
+     - Finally, the settlement price is set as the `min` over the encrypted prices of all the winning bidders, i.e., those with `canSell` = 1.  
+
    - The contract requests an off-chain decryption of `eSettlementPrice` after batch computations (`computeBidsBefore` & `allocateBids`).
+
 
 2. **Revealing the Final Price**  
    - Once the settlement price is decrypted, each winner effectively pays that same price.  
