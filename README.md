@@ -207,6 +207,20 @@ Here, you can describe or show typical test results, any coverage reports, scree
 ![Gas Test](https://github.com/El-hacen21/sealed-auction/blob/main/gas.png)
 
 
+----
+
+## Limitations & Ongoing Work
+
+1. **ConfidentialWETH Payment Flow**  
+   - Currently, the auction logic supports confidentialERC20 tokens for payment.  
+   - We have partially prepared a flow for using ConfidentialWETH, but **this functionality has not been fully tested or finalized**.  
+   - Ongoing development will focus on validating ConfidentialWETH transactions and ensuring compatibility.
+
+2. **React Frontend Interface**  
+   - A basic React interface has been set up for user interaction with the contracts, but additional features and UX improvements are still in progress.  
+   - Future updates will provide a more user-friendly bidding process, real-time status updates, and extended error-handling.
+
+We appreciate any feedback on these areas and are actively working to enhance and complete the above features.
 
 ---
 
