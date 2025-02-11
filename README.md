@@ -59,17 +59,19 @@ flowchart TB
     end
 
     %% Main participants
-    BiddingParticipants(("Bidding Participants<br>placing encrypted bids"))
-    SealedAuctionFactory(("SealedAuctionFactory<br>Deploys SealedAuctions"))
-    SealedAuction(("SealedAuction<br>Main Auction Logic"))
+    
+    SealedAuctionFactory("SealedAuctionFactory")
+    SealedAuction("SealedAuction<br>Main Auction Logic")
 
     %% Diagram connections
     BiddingParticipants --> SealedAuction
-    SealedAuctionFactory -->|Created By| SealedAuction
+    SealedAuctionFactory -->|Creates | SealedAuction
 
     %% Tokens/Assets flow into SealedAuction
     C1 --> SealedAuction
     A1 --> SealedAuction
+
+    BiddingParticipants(("Bidding Participants"))
 ```
 
 
