@@ -47,24 +47,31 @@ The auction contract:
 
 ## Global Architecture
 
-```
-                                 +-----------------------+
-                                 |    SealedAuction     |
-                                 |  (Main Auction Logic)|
-                                 +----------+------------+
-                                            |
-                                            |   Created by
-                                            |
-+---------------------------+     +-----------------------+
-|   Bidding Participants   | --> | SealedAuctionFactory |
-|  (placing encrypted bids)|     | (Deploys SealedAuctions)
-+---------------------------+     +----------+------------+
-                                            |
-             -------------------------------------------------------------------
-             |                                                                 |
-   (Payment ERC20 or  ETher)                                              (Asset ERC20)
- ConfidentialERC20 / ConfidentialWETH                               ConfidentialERC20 (Tokens sold)
-```
+```mermaid
+flowchart TB
+    %% Define subgraphs for clarity
+    subgraph Payment
+        C1[ConfidentialERC20 / ConfidentialWETH<br>(Payment: ERC20 or Ether)]
+    end
+
+    subgraph Asset
+        A1[ConfidentialERC20<br>(Tokens Sold)]
+    end
+
+    %% Main participants
+    BiddingParticipants((Bidding Participants<br>placing encrypted bids))
+    SealedAuctionFactory((SealedAuctionFactory<br>Deploys SealedAuctions))
+    SealedAuction((SealedAuction<br>(Main Auction Logic)))
+
+    %% Diagram connections
+    BiddingParticipants --> SealedAuctionFactory
+    SealedAuctionFactory -->|Created By| SealedAuction
+    
+    %% Tokens/Assets flow into SealedAuction
+    C1 --> SealedAuction
+    A1 --> SealedAuction
+
+
 
 1. **SealedAuction**  
    - Stores and processes encrypted bids, compares them homomorphically, determines the final single settlement price, and handles claims/refunds.
@@ -240,6 +247,16 @@ We appreciate any feedback on these areas and are actively working to enhance an
 ---
 
 ## Deployment & Usage
+
+### Usage
+ 1. ** Pre Requisites
+    ```bash
+      Install pnpm
+    ```
+    ```bash
+    cp .env.example .env
+    ```
+
 
 1. **Install Dependencies**
    ```bash
