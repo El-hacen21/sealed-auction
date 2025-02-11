@@ -51,26 +51,26 @@ The auction contract:
 flowchart TB
     %% Define subgraphs for clarity
     subgraph Payment
-        C1[ConfidentialERC20 / ConfidentialWETH<br>(Payment: ERC20 or Ether)]
+        C1["ConfidentialERC20 / ConfidentialWETH<br>(Payment: ERC20 or Ether)"]
     end
 
     subgraph Asset
-        A1[ConfidentialERC20<br>(Tokens Sold)]
+        A1["ConfidentialERC20<br>(Tokens Sold)"]
     end
 
     %% Main participants
-    BiddingParticipants((Bidding Participants<br>placing encrypted bids))
-    SealedAuctionFactory((SealedAuctionFactory<br>Deploys SealedAuctions))
-    SealedAuction((SealedAuction<br>(Main Auction Logic)))
+    BiddingParticipants(("Bidding Participants<br>placing encrypted bids"))
+    SealedAuctionFactory(("SealedAuctionFactory<br>Deploys SealedAuctions"))
+    SealedAuction(("SealedAuction<br>Main Auction Logic"))
 
     %% Diagram connections
-    BiddingParticipants --> SealedAuctionFactory
+    BiddingParticipants --> SealedAuction
     SealedAuctionFactory -->|Created By| SealedAuction
-    
+
     %% Tokens/Assets flow into SealedAuction
     C1 --> SealedAuction
     A1 --> SealedAuction
-
+```
 
 
 1. **SealedAuction**  
